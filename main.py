@@ -2,8 +2,8 @@ import asyncio
 import logging
 import os
 from dotenv import load_dotenv
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from db.database import init_db
+from scheduler import setup_scheduler
 
 load_dotenv()
 
@@ -17,26 +17,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger("artibat")
 
-INTERVAL = int(os.getenv("SCRAPER_INTERVAL_MINUTES", 15))
-
-
-async def run_scrapers():
-    logger.info("Starting scraper cycle...")
-    # scrapers будуть підключатися тут по мірі реалізації
-    logger.info("Scraper cycle finished.")
-
 
 async def main():
     logger.info("Artibat Hunter starting...")
     init_db()
     logger.info("Database initialized.")
 
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(run_scrapers, "interval", minutes=INTERVAL)
+    scheduler = setup_scheduler()
     scheduler.start()
-
-    logger.info(f"Scheduler started. Interval: {INTERVAL} min.")
-    await run_scrapers()
+    logger.info("Scheduler started.")
 
     try:
         await asyncio.Event().wait()
