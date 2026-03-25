@@ -42,7 +42,16 @@ async def scrape():
             url = BASE_URL + keyword
             try:
                 await page.goto(url, timeout=30000)
-                await page.wait_for_timeout(3000)
+                await page.wait_for_timeout(2000)
+
+                # закриваємо GDPR попап
+                try:
+                    await page.click("button.didomi-dismiss-button", timeout=5000)
+                    await page.wait_for_timeout(1500)
+                except Exception:
+                    pass  # попапу немає — ок
+
+                await page.wait_for_timeout(2000)
                 html = await page.content()
                 await _parse(html, keyword, page)
             except Exception as e:
@@ -50,6 +59,7 @@ async def scrape():
 
         await browser.close()
     logger.info("AlloVoisins scraper finished")
+
 
 
 async def _parse(html: str, keyword: str, page: Page):
