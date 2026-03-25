@@ -23,15 +23,37 @@ KEYWORDS = [
 async def scrape():
     logger.info("Leboncoin scraper started")
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ]
+        )
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            locale="fr-FR",
+            timezone_id="Europe/Paris",
+            viewport={"width": 1280, "height": 800},
+        )
+        page = await context.new_page()
+        await page.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
 
         for keyword in KEYWORDS:
             url = BASE_URL + keyword
             try:
                 await page.goto(url, timeout=30000)
-                await page.wait_for_timeout(2000)
+                await page.wait_for_timeout(3000)
                 html = await page.content()
+
+                # перевіряємо чи не заблокований
+                if "Доступ тимчасово обмежено" in html or "accès temporairement limité" in html.lower():
+                    logger.warning(f"Blocked by Leboncoin for keyword '{keyword}'")
+                    continue
+
                 await _parse(html, keyword, page)
             except Exception as e:
                 logger.error(f"Error scraping {url}: {e}")
@@ -58,7 +80,7 @@ async def _parse(html: str, keyword: str, page: Page):
 
 async def _fetch_detail(page: Page, url: str) -> str:
     await page.goto(url, timeout=30000)
-    await page.wait_for_timeout(1500)
+    await page.wait_for_timeout(2000)
     return await page.content()
 
 
@@ -75,7 +97,6 @@ async def _process_ad(ad, keyword: str, page: Page, session):
 
     url = f"https://www.leboncoin.fr{url_tag}"
 
-    # антидубликат к запросу деталей — не делаем лишний запрос
     if is_duplicate(session, url):
         logger.debug(f"Duplicate skipped: {url}")
         return
@@ -87,13 +108,11 @@ async def _process_ad(ad, keyword: str, page: Page, session):
     title = title_tag.get_text(strip=True) if title_tag else keyword
     location_text = location_tag.get_text(strip=True) if location_tag else ""
 
-    # город и поштовый код локации ("Nice 06000")
     parts = location_text.split(" ")
     city = parts[0] if parts else None
     postal = parts[1] if len(parts) > 1 else None
     department = _extract_department(city, postal)
 
-    # бюджет со списка
     budget_from_list = None
     if price_tag:
         try:
@@ -102,7 +121,6 @@ async def _process_ad(ad, keyword: str, page: Page, session):
         except ValueError:
             pass
 
-    # заходим на страницу за деталями
     detail_html = await _fetch_detail(page, url)
     detail_soup = BeautifulSoup(detail_html, "lxml")
     detail_text = detail_soup.get_text(separator=" ")
