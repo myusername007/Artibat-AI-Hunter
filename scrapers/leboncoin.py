@@ -1,4 +1,5 @@
 import logging
+import random, asyncio
 from playwright.async_api import async_playwright, Page
 from bs4 import BeautifulSoup
 from db.models import Lead
@@ -13,9 +14,12 @@ from db.database import SessionLocal
 
 logger = logging.getLogger("artibat.leboncoin")
 
-BASE_URL = "https://www.leboncoin.fr/recherche?category=8&locations=06,83&text="
+URLS = [
+    "https://www.leboncoin.fr/recherche?ad_type=demand&category=97&locations=Nice_06000__43.71678_7.27403_5000_50000&text=",
+    "https://www.leboncoin.fr/recherche?ad_type=demand&category=97&locations=Toulon_83000__43.12442_5.92836_5000_50000&text=",
+]
 KEYWORDS = [
-    "rénovation", "travaux", "ravalement", "isolation",
+    "renovation", "travaux", "ravalement", "isolation",
     "extension", "construction", "toiture", "sinistre"
 ]
 
@@ -42,21 +46,24 @@ async def scrape():
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
 
-        for keyword in KEYWORDS:
-            url = BASE_URL + keyword
-            try:
-                await page.goto(url, timeout=30000)
-                await page.wait_for_timeout(3000)
-                html = await page.content()
+        for base_url in URLS:
+            for keyword in KEYWORDS:
+                url = base_url + keyword
+                try:
+                    await page.goto(url, timeout=30000)
+                    await asyncio.sleep(random.uniform(2.5, 5.5))
 
-                # перевіряємо чи не заблокований
-                if "Доступ тимчасово обмежено" in html or "accès temporairement limité" in html.lower():
-                    logger.warning(f"Blocked by Leboncoin for keyword '{keyword}'")
-                    continue
+                    async with page.expect_response(
+                        lambda r: "finder/search" in r.url and r.status == 200,
+                        timeout=15000,
+                    ) as response_info:
+                        pass
+                    response = await response_info.value
+                    data = await response.json()
 
-                await _parse(html, keyword, page)
-            except Exception as e:
-                logger.error(f"Error scraping {url}: {e}")
+                    await _parse_api(data, keyword, page)
+                except Exception as e:
+                    logger.error(f"Error scraping {url}: {e}")
 
         await browser.close()
     logger.info("Leboncoin scraper finished")
@@ -77,6 +84,87 @@ async def _parse(html: str, keyword: str, page: Page):
     finally:
         session.close()
 
+
+async def _parse_api(data: dict, keyword: str, page: Page):
+    ads = data.get("ads", [])
+    logger.info(f"Found {len(ads)} ads for '{keyword}'")
+
+    session = SessionLocal()
+
+    try:
+        for ad in ads:
+            try:
+                await _process_api_ad(ad, keyword, page, session)
+            except Exception as e:
+                logger.error(f"Error processing ad: {e}")
+    finally:
+        session.close()
+
+
+async def _process_api_ad(ad, keyword: str, page: Page, session):
+
+    url = ad.get("url")
+    if not url:
+        return
+
+    if is_duplicate(session, url):
+        logger.debug(f"Duplicate skipped: {url}")
+        return
+
+    title = ad.get("subject", keyword)
+
+    location = ad.get("location", {})
+    city = location.get("city")
+    postal = location.get("zipcode")
+
+    department = _extract_department(city, postal)
+
+    price = ad.get("price")
+    budget = price[0] if isinstance(price, list) and price else None
+
+    # відкриваємо detail
+    detail_html = await _fetch_detail(page, url)
+
+    detail_soup = BeautifulSoup(detail_html, "lxml")
+    detail_text = detail_soup.get_text(separator=" ")
+
+    phone = extract_phone(detail_text)
+    email = extract_email(detail_text)
+    surface = extract_surface(detail_text)
+    budget = extract_budget(detail_text) or budget
+
+    lead_data = LeadData(
+        type="direct_lead",
+        surface=surface,
+        budget=budget,
+        phone=phone,
+        email=email,
+        urgency_keywords=has_urgency(detail_text),
+        source="leboncoin",
+    )
+
+    _, priority = score_lead(lead_data)
+
+    lead = Lead(
+        source="leboncoin",
+        city=city,
+        department=department,
+        project=title,
+        type="direct_lead",
+        surface=surface,
+        budget=budget,
+        phone=phone,
+        email=email,
+        priority=priority,
+        url=url,
+        description=detail_text[:500],
+    )
+
+    saved = save_lead(session, lead)
+
+    if saved:
+        logger.info(f"New lead: {city} | {priority} | {url}")
+        await send_alert(lead)
 
 async def _fetch_detail(page: Page, url: str) -> str:
     await page.goto(url, timeout=30000)
