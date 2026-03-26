@@ -50,18 +50,17 @@ async def scrape():
             for keyword in KEYWORDS:
                 url = base_url + keyword
                 try:
-                    await page.goto(url, timeout=30000)
-                    await asyncio.sleep(random.uniform(2.5, 5.5))
-
                     async with page.expect_response(
                         lambda r: "finder/search" in r.url and r.status == 200,
                         timeout=15000,
                     ) as response_info:
-                        pass
+                        await page.goto(url, timeout=30000)
+                        await asyncio.sleep(random.uniform(2.5, 5.5))
+
                     response = await response_info.value
                     data = await response.json()
-
                     await _parse_api(data, keyword, page)
+
                 except Exception as e:
                     logger.error(f"Error scraping {url}: {e}")
 
