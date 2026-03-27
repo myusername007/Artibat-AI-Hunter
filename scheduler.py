@@ -9,14 +9,6 @@ logger = logging.getLogger("artibat.scheduler")
 def setup_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler()
 
-    # marketplaces — кожні 15 хвилин
-    scheduler.add_job(
-        leboncoin_scrape,
-        "interval",
-        minutes=27,
-        id="leboncoin",
-        name="Leboncoin scraper",
-    )
 
     scheduler.add_job(
         allovoisins_scrape,
