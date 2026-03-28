@@ -40,7 +40,6 @@ async def send_alert(lead: Lead) -> bool:
         response = await client.post(url, json={
             "chat_id": int(CHAT_ID),
             "text": text,
-            "parse_mode": "HTML",
             "disable_web_page_preview": True,
         })
     return response.status_code == 200
