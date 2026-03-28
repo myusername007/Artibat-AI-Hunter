@@ -1,150 +1,157 @@
+import asyncio
+import json
 import logging
-from playwright.async_api import async_playwright, Page
-from bs4 import BeautifulSoup
-from db.models import Lead
-from core.extractor import (
-    extract_phone, extract_email,
-    extract_surface, extract_budget, has_urgency
-)
-from core.scorer import score_lead, LeadData
-from core.dedup import save_lead, is_duplicate
+import os
+import re
+from datetime import datetime
+from playwright.async_api import async_playwright
 from notifications.telegram import send_alert
 from db.database import SessionLocal
+from db.models import Lead
+from core.dedup import save_lead, is_duplicate
 
 logger = logging.getLogger("artibat.allovoisins")
 
-BASE_URL = "https://allovoisins.com/annonces?category=bricolage-travaux&region=provence-alpes-cote-d-azur&text="
+COOKIES_FILE = "cookies_allovoisins.json"
+FEED_URL = "https://www.allovoisins.com/accueil"
+
 KEYWORDS = [
     "rénovation", "travaux", "ravalement", "isolation",
-    "extension", "construction", "toiture", "sinistre"
+    "extension", "construction", "toiture", "sinistre",
+    "peinture", "plomberie", "électricité", "carrelage",
+    "façade", "fenêtre", "porte", "cuisine", "salle de bain"
 ]
+
+AUTO_REPLY = """Bonjour,
+
+Je suis très intéressé par votre projet. Notre équipe est disponible rapidement pour intervenir dans votre secteur.
+
+Pouvez-vous me contacter pour que nous puissions discuter de vos besoins et vous proposer un devis gratuit ?
+
+Cordialement,
+Artibat"""
 
 
 async def scrape():
     logger.info("AlloVoisins scraper started")
+
+    if not os.path.exists(COOKIES_FILE):
+        logger.error(f"Cookies file not found: {COOKIES_FILE}")
+        return
+
     async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
-        )
+        browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             locale="fr-FR",
             timezone_id="Europe/Paris",
-            viewport={"width": 1280, "height": 800},
         )
+
+        with open(COOKIES_FILE) as f:
+            cookies = json.load(f)
+        await context.add_cookies(cookies)
+
         page = await context.new_page()
-        await page.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        )
 
-        for keyword in KEYWORDS:
-            url = BASE_URL + keyword
+        try:
+            await page.goto(FEED_URL, timeout=30000)
+            await page.wait_for_timeout(3000)
+
+            # закриваємо GDPR якщо є
             try:
-                await page.goto(url, timeout=30000)
-                await page.wait_for_timeout(2000)
+                await page.click("button.didomi-dismiss-button", timeout=3000)
+                await page.wait_for_timeout(1000)
+            except Exception:
+                pass
 
-                # закриваємо GDPR попап
-                try:
-                    await page.click("button.didomi-dismiss-button", timeout=5000)
-                    await page.wait_for_timeout(1500)
-                except Exception:
-                    pass  # попапу немає — ок
+            # скролимо щоб завантажити більше
+            for _ in range(3):
+                await page.keyboard.press("End")
+                await page.wait_for_timeout(1000)
 
-                await page.wait_for_timeout(2000)
+            # знаходимо всі запити
+            posts = await page.query_selector_all("article, .request-card, [class*='request'], [class*='demande']")
+            logger.info(f"Found {len(posts)} posts")
+
+            if not posts:
+                # спробуємо через текст
                 html = await page.content()
-                await _parse(html, keyword, page)
-            except Exception as e:
-                logger.error(f"Error scraping {url}: {e}")
+                logger.info(f"Page length: {len(html)}")
 
-        await browser.close()
+            session = SessionLocal()
+            try:
+                for post in posts:
+                    try:
+                        await _process_post(post, page, session)
+                    except Exception as e:
+                        logger.error(f"Error processing post: {e}")
+            finally:
+                session.close()
+
+        except Exception as e:
+            logger.error(f"Error: {e}")
+        finally:
+            await browser.close()
+
     logger.info("AlloVoisins scraper finished")
 
 
-
-async def _parse(html: str, keyword: str, page: Page):
-    soup = BeautifulSoup(html, "lxml")
-
-    # зберігаємо html для дебагу якщо нічого не знайдено
-    ads = soup.select("a.announcement-card, div.ad-item a, article.ad a")
-    logger.info(f"Found {len(ads)} ads for '{keyword}'")
-
-    session = SessionLocal()
-    try:
-        for ad in ads:
-            try:
-                await _process_ad(ad, keyword, page, session)
-            except Exception as e:
-                logger.error(f"Error processing ad: {e}")
-    finally:
-        session.close()
-
-
-async def _fetch_detail(page: Page, url: str) -> str:
-    await page.goto(url, timeout=30000)
-    await page.wait_for_timeout(2000)
-    return await page.content()
-
-
-async def _process_ad(ad, keyword: str, page: Page, session):
-    href = ad.get("href", "")
-    if not href:
+async def _process_post(post, page, session):
+    text = await post.inner_text()
+    if not text.strip():
         return
 
-    url = href if href.startswith("http") else f"https://allovoisins.com{href}"
+    # перевіряємо чи є ключові слова
+    text_lower = text.lower()
+    if not any(kw in text_lower for kw in KEYWORDS):
+        return
+
+    # унікальний ID поста
+    post_id = await post.get_attribute("id") or await post.get_attribute("data-id")
+    url = f"https://www.allovoisins.com/accueil#{post_id}" if post_id else f"https://www.allovoisins.com/accueil#{hash(text[:100])}"
 
     if is_duplicate(session, url):
-        logger.debug(f"Duplicate skipped: {url}")
+        logger.debug(f"Duplicate: {url}")
         return
 
-    title_tag = ad.select_one("h2, h3, .title, .ad-title")
-    location_tag = ad.select_one(".location, .city, .ad-location")
-
-    title = title_tag.get_text(strip=True) if title_tag else keyword
-    location_text = location_tag.get_text(strip=True) if location_tag else ""
-    city = location_text.split("(")[0].strip() if location_text else None
-
-    # витягуємо département з дужок "(06)"
-    department = "06"
-    if "(" in location_text and ")" in location_text:
-        department = location_text.split("(")[1].split(")")[0][:2]
-
-    detail_html = await _fetch_detail(page, url)
-    detail_soup = BeautifulSoup(detail_html, "lxml")
-    detail_text = detail_soup.get_text(separator=" ")
-
-    phone = extract_phone(detail_text)
-    email = extract_email(detail_text)
-    surface = extract_surface(detail_text)
-    budget = extract_budget(detail_text)
-
-    lead_data = LeadData(
-        type="direct_lead",
-        surface=surface,
-        budget=budget,
-        phone=phone,
-        email=email,
-        urgency_keywords=has_urgency(detail_text),
-        source="allovoisins",
-    )
-    _, priority = score_lead(lead_data)
+    # витягуємо місто
+    city_match = re.search(r"(Nice|Cannes|Antibes|Toulon|Fréjus|Saint-Tropez|Grasse)[^)]*", text)
+    city = city_match.group(0).strip() if city_match else "Nice"
+    department = "06" if any(c in city for c in ["Nice", "Cannes", "Antibes", "Grasse"]) else "83"
 
     lead = Lead(
         source="allovoisins",
         city=city,
         department=department,
-        project=title,
+        project=text[:200],
         type="direct_lead",
-        surface=surface,
-        budget=budget,
-        phone=phone,
-        email=email,
-        priority=priority,
+        surface=None,
+        budget=None,
+        phone=None,
+        email=None,
+        priority="HIGH",
         url=url,
-        description=detail_text[:500],
+        description=text[:500],
     )
 
     saved = save_lead(session, lead)
     if saved:
-        logger.info(f"New lead: {city} | {priority} | {url}")
+        logger.info(f"New lead: {city} | {url}")
         await send_alert(lead)
+
+        # автовідповідь
+        try:
+            reply_btn = await post.query_selector("button[class*='reply'], a[class*='reply'], [class*='repondre'], [class*='Ответить']")
+            if reply_btn:
+                await reply_btn.click()
+                await page.wait_for_timeout(1000)
+                textarea = await page.query_selector("textarea")
+                if textarea:
+                    await textarea.fill(AUTO_REPLY)
+                    await page.wait_for_timeout(500)
+                    submit = await page.query_selector("button[type='submit']")
+                    if submit:
+                        await submit.click()
+                        logger.info(f"Auto-reply sent for: {url}")
+        except Exception as e:
+            logger.error(f"Auto-reply error: {e}")
