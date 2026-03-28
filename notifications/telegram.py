@@ -38,7 +38,7 @@ async def send_alert(lead: Lead) -> bool:
 
     async with httpx.AsyncClient() as client:
         response = await client.post(url, json={
-            "chat_id": CHAT_ID,
+            "chat_id": int(CHAT_ID),
             "text": text,
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
