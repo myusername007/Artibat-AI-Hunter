@@ -115,8 +115,9 @@ async def _process_post(post, page, session):
         return
 
     # витягуємо місто
-    city_match = re.search(r"(Nice|Cannes|Antibes|Toulon|Fréjus|Saint-Tropez|Grasse)[^)]*", text)
-    city = city_match.group(0).strip() if city_match else "Nice"
+    # витягуємо місто правильно
+    city_match = re.search(r"(Nice|Cannes|Antibes|Toulon|Fréjus|Saint-Tropez|Grasse)", text)
+    city = city_match.group(1) if city_match else "Nice"
     department = "06" if any(c in city for c in ["Nice", "Cannes", "Antibes", "Grasse"]) else "83"
 
     lead = Lead(
