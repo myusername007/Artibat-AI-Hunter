@@ -70,7 +70,7 @@ async def scrape():
                 await page.wait_for_timeout(1000)
 
             # знаходимо всі запити
-            posts = await page.query_selector_all("article, .request-card, [class*='request'], [class*='demande']")
+            posts = await page.query_selector_all("article.search.mg-bottom.pointer")
             logger.info(f"Found {len(posts)} posts")
 
             if not posts:
@@ -100,6 +100,10 @@ async def _process_post(post, page, session):
     text = await post.inner_text()
     if not text.strip():
         return
+    
+    # пропускаємо статичні блоки
+    if "Thématiques du moment" in text or "themes-du-moment" in text:
+        return
 
     # перевіряємо чи є ключові слова
     text_lower = text.lower()
@@ -107,12 +111,16 @@ async def _process_post(post, page, session):
         return
 
     # унікальний ID поста
-    post_id = await post.get_attribute("id") or await post.get_attribute("data-id")
-    url = f"https://www.allovoisins.com/accueil#{post_id}" if post_id else f"https://www.allovoisins.com/accueil#{hash(text[:100])}"
-
-    if is_duplicate(session, url):
-        logger.debug(f"Duplicate: {url}")
-        return
+    link = await post.query_selector("a[href*='/annonce/'], a[href*='/search/'], a[href*='/demande/']")
+    if link:
+        url = await link.get_attribute("href")
+        if not url.startswith("http"):
+            url = f"https://www.allovoisins.com{url}"
+    else:
+        url = f"https://www.allovoisins.com/accueil#{hash(text[:100])}"
+        if is_duplicate(session, url):
+            logger.debug(f"Duplicate: {url}")
+            return
 
     # витягуємо місто
     # витягуємо місто правильно
