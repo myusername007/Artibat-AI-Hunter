@@ -1,6 +1,5 @@
 import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from scrapers.leboncoin import scrape as leboncoin_scrape
 from scrapers.allovoisins import scrape as allovoisins_scrape
 
 logger = logging.getLogger("artibat.scheduler")
