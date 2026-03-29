@@ -264,3 +264,56 @@ def _build_summary(
         f"{score_emoji} Score: {score}",
     ]
     return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────
+# ADVANCED DETECTION
+# ─────────────────────────────────────────────
+
+class LeadType(str, Enum):
+    IMMEUBLE  = "immeuble"
+    DIVISION  = "division"
+    TERRAIN   = "terrain"
+    STANDARD  = "standard"
+
+
+IMMEUBLE_KEYWORDS = [
+    "immeuble", "immeuble de rapport", "immeuble entier",
+    "plusieurs lots", "plusieurs appartements", "multiple logements",
+    "immeuble mixte", "rez-de-chaussée commercial",
+]
+
+DIVISION_KEYWORDS = [
+    "division possible", "division parcellaire", "divisible",
+    "à diviser", "peut être divisé", "permis de diviser",
+    "découpage possible", "plusieurs entrées",
+]
+
+TERRAIN_KEYWORDS = [
+    "terrain constructible", "terrain à bâtir", "terrain viabilisé",
+    "terrain nu", "dépendance", "grange à aménager",
+    "corps de ferme", "mazet", "cabanon", "hangar",
+    "entrepôt", "local d'activité", "local commercial",
+]
+
+
+def detect_lead_type(description: str) -> LeadType:
+    text = description.lower()
+    if any(kw in text for kw in IMMEUBLE_KEYWORDS):
+        return LeadType.IMMEUBLE
+    if any(kw in text for kw in DIVISION_KEYWORDS):
+        return LeadType.DIVISION
+    if any(kw in text for kw in TERRAIN_KEYWORDS):
+        return LeadType.TERRAIN
+    return LeadType.STANDARD
+
+
+def advanced_score(description: str, current_priority: str) -> tuple[str, LeadType]:
+    """
+    Повертає (новий_пріоритет, тип_ліда).
+    IMMEUBLE / DIVISION / TERRAIN → завжди HIGH.
+    """
+    lead_type = detect_lead_type(description)
+    if lead_type in (LeadType.IMMEUBLE, LeadType.DIVISION, LeadType.TERRAIN):
+        return "HIGH", lead_type
+    return current_priority, lead_type

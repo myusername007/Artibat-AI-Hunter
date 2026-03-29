@@ -9,6 +9,7 @@ from notifications.telegram import send_alert
 from db.database import SessionLocal
 from db.models import Lead
 from core.dedup import save_lead, is_duplicate
+from core.roi_engine import advanced_score
 
 logger = logging.getLogger("artibat.allovoisins")
 
@@ -142,18 +143,19 @@ async def _process_post(post, page, session):
     city_match = re.search(r"(Nice|Cannes|Antibes|Toulon|Fréjus|Saint-Tropez|Grasse)", text)
     city = city_match.group(1) if city_match else "Nice"
     department = "06" if any(c in city for c in ["Nice", "Cannes", "Antibes", "Grasse"]) else "83"
+    base_priority, lead_type = advanced_score(text, "HIGH")
 
     lead = Lead(
         source="allovoisins",
         city=city,
         department=department,
         project=text[:200],
-        type="direct_lead",
+        type=lead_type.value,
+        priority=base_priority,
         surface=None,
         budget=None,
         phone=None,
         email=None,
-        priority="HIGH",
         url=url,
         description=text[:500],
     )

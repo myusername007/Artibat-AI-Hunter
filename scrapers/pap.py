@@ -6,7 +6,7 @@ from notifications.telegram import send_alert
 from db.database import SessionLocal
 from db.models import Lead
 from core.dedup import save_lead, is_duplicate
-from core.roi_engine import calculate_roi
+from core.roi_engine import calculate_roi, advanced_score
 
 logger = logging.getLogger("artibat.pap")
 
@@ -145,6 +145,9 @@ async def _process_card(card, session):
     city, department = _parse_city_dept(city_text or full_text)
     priority = _determine_priority(text_lower, dpe, price, surface)
 
+    # advanced detection — IMMEUBLE / DIVISION / TERRAIN → завжди HIGH
+    priority, lead_type = advanced_score(full_text, priority)
+
     title_text = await link_el.inner_text()
 
     lead = Lead(
@@ -152,7 +155,7 @@ async def _process_card(card, session):
         city=city,
         department=department,
         project=title_text[:200].strip(),
-        type="investment_opportunity",
+        type=lead_type.value,
         surface=surface,
         budget=price,
         phone=None,
