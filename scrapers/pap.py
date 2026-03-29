@@ -6,6 +6,7 @@ from notifications.telegram import send_alert
 from db.database import SessionLocal
 from db.models import Lead
 from core.dedup import save_lead, is_duplicate
+from core.roi_engine import calculate_roi
 
 logger = logging.getLogger("artibat.pap")
 
@@ -163,8 +164,28 @@ async def _process_card(card, session):
 
     saved = save_lead(session, lead)
     if saved:
-        logger.info(f"New PAP lead: {city} | {price}€ | {surface}m² | DPE:{dpe} | {priority} | {url}")
-        await send_alert(lead)
+        roi_text = ""
+        if price and surface and surface > 0:
+            try:
+                roi = calculate_roi(
+                    city=city,
+                    surface=surface,
+                    prix_achat=price,
+                    description=full_text,
+                    dpe=dpe,
+                )
+                roi_text = roi.summary
+                # підвищуємо пріоритет якщо ROI каже HIGH
+                if roi.score == "HIGH" and lead.priority != "HIGH":
+                    lead.priority = "HIGH"
+                    session.commit()
+                logger.info(f"New PAP lead: {city} | {price}€ | {surface}m² | DPE:{dpe} | ROI:{roi.roi_mid:.1f}% | {lead.priority} | {url}")
+            except Exception as e:
+                logger.error(f"ROI calculation error: {e}")
+                logger.info(f"New PAP lead: {city} | {price}€ | {surface}m² | DPE:{dpe} | {priority} | {url}")
+        else:
+            logger.info(f"New PAP lead: {city} | {price}€ | {surface}m² | DPE:{dpe} | {priority} | {url}")
+        await send_alert(lead, roi_text=roi_text)
 
 
 async def _extract_dpe_from_card(card, text: str) -> str | None:

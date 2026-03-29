@@ -33,16 +33,20 @@ def format_alert(lead: Lead) -> str:
     return "\n".join(lines)
 
 
-async def send_alert(lead: Lead) -> bool:
+async def send_alert(lead: Lead, roi_text: str = "") -> bool:
     if not BOT_TOKEN or not CHAT_ID:
         return False
 
     text = format_alert(lead)
+    if roi_text:
+        text += f"\n\n{roi_text}"
+
+    # Telegram обмеження — 4096 символів
+    text = text[:4096]
+
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
     btn_text, btn_url = SOURCE_BUTTONS.get(lead.source, DEFAULT_BUTTON)
-
-    # якщо є пряме посилання на оголошення — використовуємо його
     if lead.url and lead.url.startswith("http"):
         btn_url = lead.url
 
