@@ -15,13 +15,22 @@ logger = logging.getLogger("artibat.allovoisins")
 COOKIES_FILE = "cookies_allovoisins.json"
 FEED_URL = "https://www.allovoisins.com/accueil"
 
-KEYWORDS = [
+CONSTRUCTION_KEYWORDS = [
     "rénovation", "travaux", "ravalement", "isolation",
     "extension", "construction", "toiture", "sinistre",
     "peinture", "plomberie", "électricité", "carrelage",
-    "façade", "fenêtre", "porte", "cuisine", "salle de bain"
+    "façade", "fenêtre", "porte", "cuisine", "salle de bain",
+    "maçonnerie", "charpente", "couverture", "enduit",
+    "terrasse", "clôture", "escalier", "parquet", "placard",
 ]
 
+EXCLUDE_KEYWORDS = [
+    "déménagement", "déménager", "ménage", "nettoyage",
+    "garde d'enfant", "baby-sitting", "covoiturage",
+    "jardinage", "tonte", "cours particulier", "leçon",
+    "informatique", "dépannage informatique",
+    "vente", "don ", "cherche emploi",
+]
 AUTO_REPLY = """Bonjour,
 
 Je suis très intéressé par votre projet. Notre équipe est disponible rapidement pour intervenir dans votre secteur.
@@ -107,8 +116,14 @@ async def _process_post(post, page, session):
 
     # перевіряємо чи є ключові слова
     text_lower = text.lower()
-    if not any(kw in text_lower for kw in KEYWORDS):
+    if not any(kw in text_lower for kw in CONSTRUCTION_KEYWORDS):
         return
+
+    if any(kw in text_lower for kw in EXCLUDE_KEYWORDS):
+        logger.debug(f"Skipped (excluded category): {text[:80]}")
+        return
+
+
 
     # унікальний ID поста
     link = await post.query_selector("a[href*='/annonce/'], a[href*='/search/'], a[href*='/demande/']")
@@ -164,3 +179,16 @@ async def _process_post(post, page, session):
                         logger.info(f"Auto-reply sent for: {url}")
         except Exception as e:
             logger.error(f"Auto-reply error: {e}")
+
+
+
+
+
+
+"""python -c "
+import asyncio, logging
+logging.basicConfig(level='DEBUG', format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
+from scrapers.allovoisins import scrape
+asyncio.run(scrape())
+"
+"""
