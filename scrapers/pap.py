@@ -1,0 +1,233 @@
+import asyncio
+import logging
+import re
+from playwright.async_api import async_playwright
+from notifications.telegram import send_alert
+from db.database import SessionLocal
+from db.models import Lead
+from core.dedup import save_lead, is_duplicate
+
+logger = logging.getLogger("artibat.pap")
+
+SEARCH_URLS = [
+    "https://www.pap.fr/annonce/vente-appartement-divers-local-commercial-local-d-activite-terrain-nice-06-g8979",
+    "https://www.pap.fr/annonce/vente-appartement-divers-local-commercial-local-d-activite-terrain-alpes-maritimes-06-g30671",
+    "https://www.pap.fr/annonce/vente-appartement-divers-local-commercial-local-d-activite-terrain-var-83-g30683",
+]
+
+HIGH_PRIORITY_KEYWORDS = [
+    "à rénover", "travaux à prévoir", "fort potentiel", "à rafraîchir",
+    "immeuble", "division", "terrain", "local commercial", "local d'activité",
+    "entrepôt", "hangar", "grange", "corps de ferme", "à restructurer",
+    "potentiel", "investisseur", "rendement",
+]
+
+BAD_DPE = ["E", "F", "G"]
+
+CITIES_06 = ["Nice", "Cannes", "Antibes", "Grasse", "Menton", "Cagnes",
+             "Vence", "Mougins", "Vallauris", "Juan-les-Pins"]
+CITIES_83 = ["Toulon", "Fréjus", "Saint-Tropez", "Draguignan", "Hyères",
+             "Sainte-Maxime", "La Seyne", "Bandol", "Sanary"]
+
+
+async def scrape():
+    logger.info("PAP scraper started")
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            locale="fr-FR",
+            timezone_id="Europe/Paris",
+        )
+
+        page = await context.new_page()
+        session = SessionLocal()
+
+        try:
+            for url in SEARCH_URLS:
+                try:
+                    await _scrape_listing_page(page, url, session)
+                    await asyncio.sleep(2)
+                except Exception as e:
+                    logger.error(f"Error scraping {url}: {e}")
+        finally:
+            session.close()
+            await browser.close()
+
+    logger.info("PAP scraper finished")
+
+
+async def _scrape_listing_page(page, url: str, session):
+    logger.info(f"Scraping: {url}")
+
+    await page.goto(url, timeout=30000)
+    await page.wait_for_timeout(2500)
+
+    # cookie banner
+    for selector in ["button#didomi-notice-agree-button", "button[class*='agree']", "button[class*='accept']"]:
+        try:
+            await page.click(selector, timeout=2000)
+            await page.wait_for_timeout(500)
+            break
+        except Exception:
+            pass
+
+    # правильний селектор з DevTools
+    cards = await page.query_selector_all("div.search-list-item-alt")
+    logger.info(f"Found {len(cards)} cards on {url}")
+
+    if not cards:
+        cards = await page.query_selector_all("div[class*='search-list-item']")
+        logger.info(f"Fallback: {len(cards)} cards")
+
+    for card in cards:
+        try:
+            await _process_card(card, session)
+        except Exception as e:
+            logger.error(f"Error processing card: {e}")
+
+
+async def _process_card(card, session):
+    link_el = await card.query_selector("a.item-title")
+    if not link_el:
+        link_el = await card.query_selector("a[href*='/annonces/']")
+    if not link_el:
+        return
+
+    href = await link_el.get_attribute("href")
+    if not href:
+        return
+
+    url = f"https://www.pap.fr{href}" if not href.startswith("http") else href
+
+    if is_duplicate(session, url):
+        logger.debug(f"Duplicate: {url}")
+        return
+
+    price_el = await card.query_selector("span.item-price")
+    price_text = await price_el.inner_text() if price_el else ""
+    price = _parse_price(price_text)
+
+    city_el = await card.query_selector("span.h1")
+    city_text = await city_el.inner_text() if city_el else ""
+
+    tags_el = await card.query_selector("ul.item-tags, div.item-tags")
+    tags_text = await tags_el.inner_text() if tags_el else ""
+    surface = _extract_surface(tags_text)
+
+    full_text = await card.inner_text()
+    text_lower = full_text.lower()
+
+    dpe = await _extract_dpe_from_card(card, full_text)
+    city, department = _parse_city_dept(city_text or full_text)
+    priority = _determine_priority(text_lower, dpe, price, surface)
+
+    title_text = await link_el.inner_text()
+
+    lead = Lead(
+        source="pap",
+        city=city,
+        department=department,
+        project=title_text[:200].strip(),
+        type="investment_opportunity",
+        surface=surface,
+        budget=price,
+        phone=None,
+        email=None,
+        priority=priority,
+        url=url,
+        description=_build_description(full_text, price, surface, dpe),
+    )
+
+    saved = save_lead(session, lead)
+    if saved:
+        logger.info(f"New PAP lead: {city} | {price}€ | {surface}m² | DPE:{dpe} | {priority} | {url}")
+        await send_alert(lead)
+
+
+async def _extract_dpe_from_card(card, text: str) -> str | None:
+    dpe_el = await card.query_selector("div[class*='item-thumb-dpe']")
+    if dpe_el:
+        class_attr = await dpe_el.get_attribute("class") or ""
+        match = re.search(r"item-thumb-dpe-([a-g])", class_attr, re.IGNORECASE)
+        if match:
+            return match.group(1).upper()
+    return _extract_dpe_from_text(text)
+
+
+def _extract_dpe_from_text(text: str) -> str | None:
+    match = re.search(r"(?:DPE|classe\s+énergi(?:e|étique)|diagnostic)[^\w]*([A-G])\b", text, re.IGNORECASE)
+    return match.group(1).upper() if match else None
+
+
+def _parse_price(text: str) -> float | None:
+    cleaned = text.replace("\u202f", "").replace("\xa0", "").replace(" ", "").replace(".", "")
+    match = re.search(r"(\d{4,})", cleaned)
+    if match:
+        val = float(match.group(1))
+        if 30_000 <= val <= 10_000_000:
+            return val
+    return None
+
+
+def _extract_surface(text: str) -> float | None:
+    match = re.search(r"(\d+)\s*m[²2]", text)
+    if match:
+        val = float(match.group(1))
+        if 10 <= val <= 5000:
+            return val
+    return None
+
+
+def _parse_city_dept(text: str) -> tuple[str, str]:
+    for city in CITIES_06:
+        if city.lower() in text.lower():
+            return city, "06"
+    for city in CITIES_83:
+        if city.lower() in text.lower():
+            return city, "83"
+    if "06" in text:
+        return "Nice", "06"
+    if "83" in text:
+        return "Toulon", "83"
+    return "Nice", "06"
+
+
+def _determine_priority(text_lower: str, dpe: str | None, price: float | None, surface: float | None) -> str:
+    score = 0
+    for kw in HIGH_PRIORITY_KEYWORDS:
+        if kw in text_lower:
+            score += 2
+    if dpe in BAD_DPE:
+        score += 3
+        if dpe in ["F", "G"]:
+            score += 2
+    if price and surface and surface > 0:
+        ppm2 = price / surface
+        if ppm2 < 3000:
+            score += 3
+        elif ppm2 < 4000:
+            score += 1
+    if any(kw in text_lower for kw in ["immeuble", "terrain", "division"]):
+        score += 5
+    if score >= 5:
+        return "HIGH"
+    elif score >= 2:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _build_description(text: str, price: float | None, surface: float | None, dpe: str | None) -> str:
+    parts = []
+    if price:
+        parts.append(f"Prix: {int(price):,}€".replace(",", " "))
+    if surface:
+        parts.append(f"Surface: {int(surface)}m²")
+    if price and surface and surface > 0:
+        parts.append(f"Prix/m²: {int(price/surface):,}€".replace(",", " "))
+    if dpe:
+        parts.append(f"DPE: {dpe}")
+    parts.append("")
+    parts.append(text[:400].strip())
+    return "\n".join(parts)
