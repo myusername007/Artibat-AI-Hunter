@@ -9,25 +9,39 @@ from core.dedup import save_lead, is_duplicate
 
 logger = logging.getLogger("artibat.pap")
 
+# Тільки реальні URL з PAP — перевірено вручну
 SEARCH_URLS = [
+    # Nice (06) — основний
     "https://www.pap.fr/annonce/vente-appartement-divers-local-commercial-local-d-activite-terrain-nice-06-g8979",
-    "https://www.pap.fr/annonce/vente-appartement-divers-local-commercial-local-d-activite-terrain-alpes-maritimes-06-g30671",
+    # Cannes (06)
+    "https://www.pap.fr/annonce/vente-appartement-divers-local-commercial-local-d-activite-terrain-cannes-06-g8041",
+    # Antibes (06)
+    "https://www.pap.fr/annonce/vente-appartement-divers-local-commercial-local-d-activite-terrain-antibes-06-g7508",
+    # Toulon (83)
+    "https://www.pap.fr/annonce/vente-appartement-divers-local-commercial-local-d-activite-terrain-toulon-83-g12158",
+    # Var (83) — загальний
     "https://www.pap.fr/annonce/vente-appartement-divers-local-commercial-local-d-activite-terrain-var-83-g30683",
+]
+
+# Тільки pap.fr оголошення — все інше ігноруємо
+ALLOWED_URL_PREFIXES = [
+    "https://www.pap.fr/annonces/",
 ]
 
 HIGH_PRIORITY_KEYWORDS = [
     "à rénover", "travaux à prévoir", "fort potentiel", "à rafraîchir",
-    "immeuble", "division", "terrain", "local commercial", "local d'activité",
-    "entrepôt", "hangar", "grange", "corps de ferme", "à restructurer",
-    "potentiel", "investisseur", "rendement",
+    "immeuble", "division parcellaire", "terrain constructible",
+    "à restructurer", "rénovation complète", "gros travaux",
+    "rendement", "investisseur", "rentabilité",
+    "local commercial", "local d'activité", "entrepôt",
 ]
 
 BAD_DPE = ["E", "F", "G"]
 
-CITIES_06 = ["Nice", "Cannes", "Antibes", "Grasse", "Menton", "Cagnes",
-             "Vence", "Mougins", "Vallauris", "Juan-les-Pins"]
+CITIES_06 = ["Nice", "Cannes", "Antibes", "Grasse", "Menton", "Cagnes-sur-Mer",
+             "Cagnes", "Vence", "Mougins", "Vallauris", "Juan-les-Pins"]
 CITIES_83 = ["Toulon", "Fréjus", "Saint-Tropez", "Draguignan", "Hyères",
-             "Sainte-Maxime", "La Seyne", "Bandol", "Sanary"]
+             "Sainte-Maxime", "La Seyne-sur-Mer", "La Seyne", "Bandol", "Sanary"]
 
 
 async def scrape():
@@ -64,8 +78,7 @@ async def _scrape_listing_page(page, url: str, session):
     await page.goto(url, timeout=30000)
     await page.wait_for_timeout(2500)
 
-    # cookie banner
-    for selector in ["button#didomi-notice-agree-button", "button[class*='agree']", "button[class*='accept']"]:
+    for selector in ["button#didomi-notice-agree-button", "button[class*='agree']"]:
         try:
             await page.click(selector, timeout=2000)
             await page.wait_for_timeout(500)
@@ -73,7 +86,6 @@ async def _scrape_listing_page(page, url: str, session):
         except Exception:
             pass
 
-    # правильний селектор з DevTools
     cards = await page.query_selector_all("div.search-list-item-alt")
     logger.info(f"Found {len(cards)} cards on {url}")
 
@@ -95,11 +107,16 @@ async def _process_card(card, session):
     if not link_el:
         return
 
-    href = await link_el.get_attribute("href")
+    href = await link_el.get_attribute("href") or ""
     if not href:
         return
 
     url = f"https://www.pap.fr{href}" if not href.startswith("http") else href
+
+    # фільтр — тільки pap.fr/annonces/
+    if not any(url.startswith(p) for p in ALLOWED_URL_PREFIXES):
+        logger.debug(f"Skipped non-PAP URL: {url}")
+        return
 
     if is_duplicate(session, url):
         logger.debug(f"Duplicate: {url}")
@@ -157,12 +174,15 @@ async def _extract_dpe_from_card(card, text: str) -> str | None:
 
 
 def _extract_dpe_from_text(text: str) -> str | None:
-    match = re.search(r"(?:DPE|classe\s+énergi(?:e|étique)|diagnostic)[^\w]*([A-G])\b", text, re.IGNORECASE)
+    match = re.search(r"(?:DPE|classe\s+énergi(?:e|étique))[^\w]*([A-G])\b", text, re.IGNORECASE)
     return match.group(1).upper() if match else None
 
 
 def _parse_price(text: str) -> float | None:
-    cleaned = text.replace("\u202f", "").replace("\xa0", "").replace(" ", "").replace(".", "")
+    # "395.000 €" → 395000, "1 200 000 €" → 1200000
+    cleaned = (text
+               .replace("\u202f", "").replace("\xa0", "")
+               .replace(" ", "").replace(".", "").replace(",", ""))
     match = re.search(r"(\d{4,})", cleaned)
     if match:
         val = float(match.group(1))
@@ -196,21 +216,30 @@ def _parse_city_dept(text: str) -> tuple[str, str]:
 
 def _determine_priority(text_lower: str, dpe: str | None, price: float | None, surface: float | None) -> str:
     score = 0
+
+    # ключові слова з чіткого списку (не загальні як "excellent")
     for kw in HIGH_PRIORITY_KEYWORDS:
         if kw in text_lower:
             score += 2
+
+    # DPE E/F/G = потреба реновації = наш профіль
     if dpe in BAD_DPE:
         score += 3
         if dpe in ["F", "G"]:
-            score += 2
+            score += 2  # F/G → +5 total
+
+    # ціна/м²
     if price and surface and surface > 0:
         ppm2 = price / surface
         if ppm2 < 3000:
             score += 3
         elif ppm2 < 4000:
             score += 1
-    if any(kw in text_lower for kw in ["immeuble", "terrain", "division"]):
+
+    # immeuble/terrain/division завжди HIGH
+    if any(kw in text_lower for kw in ["immeuble", "terrain", "division", "corps de ferme"]):
         score += 5
+
     if score >= 5:
         return "HIGH"
     elif score >= 2:
@@ -225,7 +254,7 @@ def _build_description(text: str, price: float | None, surface: float | None, dp
     if surface:
         parts.append(f"Surface: {int(surface)}m²")
     if price and surface and surface > 0:
-        parts.append(f"Prix/m²: {int(price/surface):,}€".replace(",", " "))
+        parts.append(f"Prix/m²: {int(price / surface):,}€".replace(",", " "))
     if dpe:
         parts.append(f"DPE: {dpe}")
     parts.append("")
