@@ -9,18 +9,20 @@ from core.dedup import save_lead, is_duplicate
 
 logger = logging.getLogger("artibat.pap")
 
-# Тільки реальні URL з PAP — перевірено вручну
+# Реальні URL з PAP — перевірено вручну на сайті
 SEARCH_URLS = [
-    # Nice (06) — основний
+    # Nice (06)
     "https://www.pap.fr/annonce/vente-appartement-divers-local-commercial-local-d-activite-terrain-nice-06-g8979",
     # Cannes (06)
-    "https://www.pap.fr/annonce/vente-appartement-divers-local-commercial-local-d-activite-terrain-cannes-06-g8041",
+    "https://www.pap.fr/annonce/vente-appartement-divers-local-commercial-local-d-activite-terrain-cannes-06-g43668",
     # Antibes (06)
-    "https://www.pap.fr/annonce/vente-appartement-divers-local-commercial-local-d-activite-terrain-antibes-06-g7508",
+    "https://www.pap.fr/annonce/vente-appartement-divers-local-commercial-local-d-activite-terrain-antibes-06-g8853",
+    # Grasse (06)
+    "https://www.pap.fr/annonce/vente-appartement-divers-local-commercial-local-d-activite-terrain-grasse-06-g43669",
     # Toulon (83)
-    "https://www.pap.fr/annonce/vente-appartement-divers-local-commercial-local-d-activite-terrain-toulon-83-g12158",
-    # Var (83) — загальний
-    "https://www.pap.fr/annonce/vente-appartement-divers-local-commercial-local-d-activite-terrain-var-83-g30683",
+    "https://www.pap.fr/annonce/vente-appartement-divers-local-commercial-local-d-activite-terrain-toulon-83-g43624",
+    # Fréjus (83)
+    "https://www.pap.fr/annonce/vente-appartement-divers-local-commercial-local-d-activite-terrain-frejus-83-g43697",
 ]
 
 # Тільки pap.fr оголошення — все інше ігноруємо
