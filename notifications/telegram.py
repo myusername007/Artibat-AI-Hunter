@@ -14,18 +14,13 @@ def format_alert(lead: Lead) -> str:
     if lead.city:
         lines.append(f"City: {lead.city}")
     if lead.project:
-        lines.append(f"Project: {lead.project}")
-    if lead.surface:
-        lines.append(f"Surface: {lead.surface} m²")
-    if lead.budget:
-        lines.append(f"Budget: ~{int(lead.budget):,} €".replace(",", " "))
+        lines.append(f"Project: {lead.project[:200]}")
     lines.append("")
-    contact = lead.phone or lead.email or "—"
-    lines.append(f"Contact: {contact}")
+    if lead.description:
+        lines.append(lead.description[:300])
     lines.append("")
     lines.append(f"Source: {lead.source}")
     lines.append(f"Priority: {lead.priority}")
-    lines.append(f"\nLink: {lead.url}")
     return "\n".join(lines)
 
 
@@ -36,10 +31,21 @@ async def send_alert(lead: Lead) -> bool:
     text = format_alert(lead)
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
+    # inline кнопка
+    reply_markup = {
+        "inline_keyboard": [[
+            {
+                "text": "🌐 Відкрити AlloVoisins",
+                "url": "https://www.allovoisins.com/accueil"
+            }
+        ]]
+    }
+
     async with httpx.AsyncClient() as client:
         response = await client.post(url, json={
             "chat_id": int(CHAT_ID),
             "text": text,
+            "reply_markup": reply_markup,
             "disable_web_page_preview": True,
         })
     return response.status_code == 200
