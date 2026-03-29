@@ -78,7 +78,7 @@ async def _scrape_listing_page(page, url: str, session):
     logger.info(f"Scraping: {url}")
 
     await page.goto(url, timeout=30000)
-    await page.wait_for_timeout(2500)
+    await page.wait_for_timeout(1500)
 
     for selector in ["button#didomi-notice-agree-button", "button[class*='agree']"]:
         try:
@@ -88,12 +88,14 @@ async def _scrape_listing_page(page, url: str, session):
         except Exception:
             pass
 
+    # чекаємо поки картки з'являться на сторінці (до 10 сек)
+    try:
+        await page.wait_for_selector("div.search-list-item-alt", timeout=10000)
+    except Exception:
+        logger.warning(f"No cards appeared within timeout: {url}")
+
     cards = await page.query_selector_all("div.search-list-item-alt")
     logger.info(f"Found {len(cards)} cards on {url}")
-
-    if not cards:
-        cards = await page.query_selector_all("div[class*='search-list-item']")
-        logger.info(f"Fallback: {len(cards)} cards")
 
     for card in cards:
         try:
