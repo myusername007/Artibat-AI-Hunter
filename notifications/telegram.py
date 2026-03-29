@@ -8,6 +8,15 @@ load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+SOURCE_BUTTONS = {
+    "allovoisins": ("🌐 Відкрити AlloVoisins", "https://www.allovoisins.com/accueil"),
+    "pap":         ("🏠 Відкрити PAP", "https://www.pap.fr"),
+    "bienici":     ("🏡 Відкрити Bien'ici", "https://www.bienici.com"),
+    "seloger":     ("🔍 Відкрити SeLoger", "https://www.seloger.com"),
+}
+
+DEFAULT_BUTTON = ("🌐 Відкрити оголошення", "https://www.pap.fr")
+
 
 def format_alert(lead: Lead) -> str:
     lines = ["🔥 NEW PROJECT\n"]
@@ -31,13 +40,15 @@ async def send_alert(lead: Lead) -> bool:
     text = format_alert(lead)
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-    # inline кнопка
+    btn_text, btn_url = SOURCE_BUTTONS.get(lead.source, DEFAULT_BUTTON)
+
+    # якщо є пряме посилання на оголошення — використовуємо його
+    if lead.url and lead.url.startswith("http"):
+        btn_url = lead.url
+
     reply_markup = {
         "inline_keyboard": [[
-            {
-                "text": "🌐 Відкрити AlloVoisins",
-                "url": "https://www.allovoisins.com/accueil"
-            }
+            {"text": btn_text, "url": btn_url}
         ]]
     }
 
