@@ -4,7 +4,6 @@ import logging
 import os
 import re
 from playwright.async_api import async_playwright
-from playwright_stealth import Stealth
 from notifications.telegram import send_alert
 from db.database import SessionLocal
 from db.models import Lead
@@ -14,7 +13,9 @@ from core.roi_engine import advanced_score
 logger = logging.getLogger("artibat.allovoisins")
 
 COOKIES_FILE = "cookies_allovoisins.json"
-FEED_URL = "https://www.allovoisins.com/accueil"
+FEED_URL     = "https://www.allovoisins.com/accueil"
+AV_EMAIL     = os.getenv("AV_EMAIL")
+AV_PASSWORD  = os.getenv("AV_PASSWORD")
 
 CONSTRUCTION_KEYWORDS = [
     "rénovation", "travaux", "ravalement", "isolation",
@@ -53,36 +54,85 @@ def _extract_title(text: str) -> str:
     return text[:80]
 
 
+def _is_authenticated(html: str) -> bool:
+    html_l = html.lower()
+    return "mon compte" in html_l or "déconnexion" in html_l or "se déconnecter" in html_l
+
+
+async def _do_login(page, context) -> bool:
+    logger.info("Logging in via form...")
+    try:
+        await page.goto("https://www.allovoisins.com/", timeout=30000)
+        await page.wait_for_timeout(2000)
+
+        for sel in ["button.didomi-dismiss-button", "button#didomi-notice-agree-button"]:
+            try:
+                await page.click(sel, timeout=2000)
+                await page.wait_for_timeout(500)
+                break
+            except Exception:
+                pass
+
+        await page.click("button[data-mtm-category='connexion'], button.btn--ghost", timeout=5000)
+        await page.wait_for_timeout(1500)
+
+        await page.fill("input[type='email']", AV_EMAIL, timeout=5000)
+        await page.wait_for_timeout(300)
+        await page.fill("input[type='password']", AV_PASSWORD, timeout=5000)
+        await page.wait_for_timeout(300)
+        await page.click("button:has-text('Connexion')", timeout=5000)
+        await page.wait_for_timeout(3000)
+
+        html = await page.content()
+        if _is_authenticated(html):
+            cookies = await context.cookies()
+            with open(COOKIES_FILE, "w") as f:
+                json.dump(cookies, f)
+            logger.info("Login successful, cookies saved ✅")
+            return True
+        else:
+            logger.error("Login failed after form submit ❌")
+            return False
+
+    except Exception as e:
+        logger.error(f"Login error: {e}")
+        return False
+
+
 async def scrape():
     logger.info("AlloVoisins scraper started")
 
-    if not os.path.exists(COOKIES_FILE):
-        logger.error(f"Cookies file not found: {COOKIES_FILE}")
-        return
-
     async with async_playwright() as p:
-        # Точно як manual_login: headless=False, звичайний контекст
         browser = await p.chromium.launch(headless=False)
         context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             locale="fr-FR",
             timezone_id="Europe/Paris",
         )
-
-        with open(COOKIES_FILE) as f:
-            cookies = json.load(f)
-        await context.add_cookies(cookies)
-
         page = await context.new_page()
+
+        if os.path.exists(COOKIES_FILE):
+            with open(COOKIES_FILE) as f:
+                cookies = json.load(f)
+            await context.add_cookies(cookies)
 
         try:
             await page.goto(FEED_URL, timeout=30000)
             await page.wait_for_timeout(3000)
 
             html = await page.content()
-            if "mon compte" in html.lower() or "déconnexion" in html.lower():
-                logger.info("Session: authenticated ✅")
-            else:
-                logger.warning("Session: NOT authenticated ⚠️")
+
+            if not _is_authenticated(html):
+                logger.warning("Session expired — re-logging in...")
+                ok = await _do_login(page, context)
+                if not ok:
+                    logger.error("Cannot authenticate, aborting")
+                    return
+                await page.goto(FEED_URL, timeout=30000)
+                await page.wait_for_timeout(3000)
+                html = await page.content()
+
+            logger.info("Session: authenticated ✅")
 
             try:
                 await page.click("button.didomi-dismiss-button", timeout=3000)
@@ -111,7 +161,7 @@ async def scrape():
                 session.close()
 
         except Exception as e:
-            logger.error(f"Error: {e}")
+            logger.error(f"Scraper error: {e}")
         finally:
             await browser.close()
 
@@ -180,7 +230,7 @@ async def _process_post(post, page, session):
 
         try:
             reply_btn = await post.query_selector(
-                "button[class*='reply'], a[class*='reply'], [class*='repondre'], [class*='Ответить']"
+                "button[class*='reply'], a[class*='reply'], [class*='repondre']"
             )
             if reply_btn:
                 await reply_btn.click()
@@ -196,7 +246,7 @@ async def _process_post(post, page, session):
         except Exception as e:
             logger.error(f"Auto-reply error: {e}")
 
-
+            
 """python -c "
 import asyncio, logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
