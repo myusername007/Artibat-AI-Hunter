@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 from playwright.async_api import async_playwright
+from playwright_stealth import Stealth
 from notifications.telegram import send_alert
 from db.database import SessionLocal
 from db.models import Lead
@@ -59,13 +60,14 @@ async def scrape():
         )
 
         page = await context.new_page()
+        await Stealth().apply_stealth_async(page)
         session = SessionLocal()
 
         try:
             for url in SEARCH_URLS:
                 try:
                     await _scrape_listing_page(page, url, session)
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(10)  # більша пауза між містами
                 except Exception as e:
                     logger.error(f"Error scraping {url}: {e}")
         finally:
