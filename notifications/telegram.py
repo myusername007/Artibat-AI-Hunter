@@ -92,29 +92,29 @@ def _build_keyboard(lead: Lead) -> dict:
     if lead.url and lead.url.startswith("http"):
         btn_url = lead.url
 
-    row = [{"text": btn_text, "url": btn_url}]
+    row1 = [{"text": btn_text, "url": btn_url}]
 
     # Кнопка "Позвонить" — тільки якщо є номер
     if lead.phone:
         phone_clean = lead.phone.strip().replace(" ", "")
-        row.insert(0, {"text": "📞 Позвонить", "url": f"tel:{phone_clean}"})
+        row1.insert(0, {"text": "📞 Позвонить", "url": f"tel:{phone_clean}"})
 
-    return {"inline_keyboard": [row]}
+    # Кнопка шаблону відповіді — для AV лідів
+    row2 = []
+    if lead.source == "allovoisins":
+        row2.append({"text": "📋 Copier réponse", "url": _template_share_url()})
+
+    keyboard = [row1]
+    if row2:
+        keyboard.append(row2)
+
+    return {"inline_keyboard": keyboard}
 
 
-async def _send_template_message(client: httpx.AsyncClient, lead: Lead) -> None:
-    """Окреме forward-ready повідомлення з шаблоном відповіді."""
-    city_part = f" ({lead.city})" if lead.city else ""
-    header = f"📋 Шаблон відповіді{city_part} — скопіюй і відправ:\n\n"
-    text = header + AUTO_REPLY_TEMPLATE
-    await client.post(
-        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-        json={
-            "chat_id": int(CHAT_ID),
-            "text": text[:4096],
-            "disable_web_page_preview": True,
-        },
-    )
+def _template_share_url() -> str:
+    """t.me/share URL з текстом шаблону відповіді."""
+    import urllib.parse
+    return "https://t.me/share/url?url=artibat&text=" + urllib.parse.quote(AUTO_REPLY_TEMPLATE)
 
 
 async def _send_sms_high(lead: Lead) -> None:
@@ -163,9 +163,7 @@ async def send_alert(lead: Lead, roi_text: str = "") -> bool:
         )
         ok = response.status_code == 200
 
-        # Окреме повідомлення з шаблоном — для AV лідів
-        if ok and lead.source == "allovoisins":
-            await _send_template_message(client, lead)
+        pass  # шаблон тепер в кнопці Copier réponse
 
     # SMS — тільки для HIGH, незалежно від джерела
     if lead.priority == "HIGH":
