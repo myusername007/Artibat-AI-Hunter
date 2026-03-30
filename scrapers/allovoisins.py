@@ -4,6 +4,7 @@ import logging
 import os
 import re
 from playwright.async_api import async_playwright
+from playwright_stealth import Stealth
 from notifications.telegram import send_alert
 from db.database import SessionLocal
 from db.models import Lead
@@ -45,7 +46,6 @@ Artibat"""
 
 
 def _extract_title(text: str) -> str:
-    """Extract first meaningful line as project title."""
     for line in text.splitlines():
         line = line.strip()
         if len(line) > 10 and line not in ("NOUVEAU", "Bud", "Demande publique"):
@@ -68,15 +68,25 @@ async def scrape():
             timezone_id="Europe/Paris",
         )
 
+        # ── Stealth — обов'язково до goto ────────────────────────────────────
+        page = await context.new_page()
+        await Stealth().apply_stealth_async(page)
+
         with open(COOKIES_FILE) as f:
             cookies = json.load(f)
         await context.add_cookies(cookies)
-
-        page = await context.new_page()
+        # ─────────────────────────────────────────────────────────────────────
 
         try:
             await page.goto(FEED_URL, timeout=30000)
             await page.wait_for_timeout(3000)
+
+            # Діагностика: чи залогінені?
+            html = await page.content()
+            if "mon compte" in html.lower() or "déconnexion" in html.lower():
+                logger.info("Session: authenticated ✅")
+            else:
+                logger.warning("Session: NOT authenticated ⚠️ — cookies may be stale")
 
             try:
                 await page.click("button.didomi-dismiss-button", timeout=3000)
@@ -92,8 +102,7 @@ async def scrape():
             logger.info(f"Found {len(posts)} posts")
 
             if not posts:
-                html = await page.content()
-                logger.info(f"Page length: {len(html)}")
+                logger.warning(f"Page HTML length: {len(html)} — possible block or redirect")
 
             session = SessionLocal()
             try:
@@ -126,7 +135,7 @@ async def _process_post(post, page, session):
         return
 
     if any(kw in text_lower for kw in EXCLUDE_KEYWORDS):
-        logger.debug(f"Skipped (excluded category): {text[:80]}")
+        logger.debug(f"Skipped (excluded): {text[:80]}")
         return
 
     link = await post.query_selector("a[href*='/annonce/'], a[href*='/search/'], a[href*='/demande/']")
@@ -145,9 +154,10 @@ async def _process_post(post, page, session):
     city = city_match.group(1) if city_match else "Nice"
     department = "06" if any(c in city for c in ["Nice", "Cannes", "Antibes", "Grasse"]) else "83"
 
-    base_priority, lead_type = advanced_score(text, "HIGH")
+    # ── Фікс: дефолтний priority LOW, advanced_score підвищує якщо треба ──
+    base_priority, lead_type = advanced_score(text, "LOW")
+    # ─────────────────────────────────────────────────────────────────────
 
-    # Чистий текст для опису — прибираємо службові рядки AV
     clean_lines = [
         line.strip() for line in text.splitlines()
         if line.strip() and line.strip() not in ("NOUVEAU", "Bud", "Demande publique")
@@ -171,7 +181,7 @@ async def _process_post(post, page, session):
 
     saved = save_lead(session, lead)
     if saved:
-        logger.info(f"New lead: {city} | {url}")
+        logger.info(f"New lead: {city} | {base_priority} | {url}")
         await send_alert(lead)
 
         try:
@@ -188,11 +198,9 @@ async def _process_post(post, page, session):
                     submit = await page.query_selector("button[type='submit']")
                     if submit:
                         await submit.click()
-                        logger.info(f"Auto-reply sent for: {url}")
+                        logger.info(f"Auto-reply sent: {url}")
         except Exception as e:
             logger.error(f"Auto-reply error: {e}")
-
-
 
 
 """python -c "
