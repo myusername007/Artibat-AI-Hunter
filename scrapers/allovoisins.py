@@ -14,8 +14,6 @@ logger = logging.getLogger("artibat.allovoisins")
 
 COOKIES_FILE = "cookies_allovoisins.json"
 FEED_URL     = "https://www.allovoisins.com/accueil"
-AV_EMAIL     = os.getenv("AV_EMAIL")
-AV_PASSWORD  = os.getenv("AV_PASSWORD")
 
 CONSTRUCTION_KEYWORDS = [
     "rénovation", "travaux", "ravalement", "isolation",
@@ -54,78 +52,12 @@ def _extract_title(text: str) -> str:
     return text[:80]
 
 
-async def _login(page, context) -> bool:
-    """Завжди логінимось через форму — натискаємо Se connecter, вводимо дані."""
-    logger.info("Opening AlloVoisins homepage...")
-    await page.goto("https://www.allovoisins.com/", timeout=30000)
-    await page.wait_for_timeout(2000)
-
-    # GDPR banner
-    for sel in ["button.didomi-dismiss-button", "button#didomi-notice-agree-button"]:
-        try:
-            await page.click(sel, timeout=2000)
-            await page.wait_for_timeout(500)
-            break
-        except Exception:
-            pass
-
-    # Клік на "Se connecter" — пробуємо всі можливі селектори
-    logger.info("Clicking Se connecter...")
-    clicked = False
-    for sel in [
-        "button[data-mtm-category='connexion']",
-        "button.btn--ghost",
-        "button:has-text('Se connecter')",
-        "a:has-text('Se connecter')",
-        "[class*='sign-in']",
-    ]:
-        try:
-            await page.click(sel, timeout=3000)
-            clicked = True
-            logger.info(f"Clicked: {sel}")
-            break
-        except Exception:
-            continue
-
-    if not clicked:
-        logger.error("Could not find Se connecter button")
-        return False
-
-    await page.wait_for_timeout(2000)
-
-    # Вводимо email
-    logger.info("Filling email...")
-    await page.fill("input[type='email']", AV_EMAIL, timeout=5000)
-    await page.wait_for_timeout(400)
-
-    # Вводимо password
-    logger.info("Filling password...")
-    await page.fill("input[type='password']", AV_PASSWORD, timeout=5000)
-    await page.wait_for_timeout(400)
-
-    # Клік Connexion
-    logger.info("Clicking Connexion...")
-    await page.click("#login-btn", timeout=5000)
-    await page.wait_for_timeout(3000)
-
-    # Зберігаємо cookies
-    html = await page.content()
-    html_l = html.lower()
-    authenticated = "mon compte" in html_l or "déconnexion" in html_l or "se déconnecter" in html_l
-
-    if authenticated:
-        cookies = await context.cookies()
-        with open(COOKIES_FILE, "w") as f:
-            json.dump(cookies, f)
-        logger.info("Login successful ✅ cookies saved")
-    else:
-        logger.error("Login failed ❌")
-
-    return authenticated
-
-
 async def scrape():
     logger.info("AlloVoisins scraper started")
+
+    if not os.path.exists(COOKIES_FILE):
+        logger.error(f"Cookies file not found: {COOKIES_FILE}. Run: python login_allovoisins.py --manual")
+        return
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=False)
@@ -135,28 +67,31 @@ async def scrape():
             locale="fr-FR",
             timezone_id="Europe/Paris",
         )
+
+        with open(COOKIES_FILE) as f:
+            cookies = json.load(f)
+        await context.add_cookies(cookies)
+
         page = await context.new_page()
 
         try:
-            # Завжди логінимось перед скрапінгом
-            ok = await _login(page, context)
-            if not ok:
-                logger.error("Aborting — not authenticated")
-                return
-
-            # Переходимо на feed
-            logger.info("Navigating to feed...")
             await page.goto(FEED_URL, timeout=30000)
             await page.wait_for_timeout(3000)
 
-            # GDPR на feed
+            html = await page.content()
+            html_l = html.lower()
+            if "mon compte" in html_l or "déconnexion" in html_l or "se déconnecter" in html_l:
+                logger.info("Session: authenticated ✅")
+            else:
+                logger.error("Session: NOT authenticated ❌ — run: python login_allovoisins.py --manual")
+                return
+
             try:
                 await page.click("button.didomi-dismiss-button", timeout=3000)
                 await page.wait_for_timeout(1000)
             except Exception:
                 pass
 
-            # Скролимо вниз
             for _ in range(3):
                 await page.keyboard.press("End")
                 await page.wait_for_timeout(1000)
@@ -165,7 +100,6 @@ async def scrape():
             logger.info(f"Found {len(posts)} posts")
 
             if not posts:
-                html = await page.content()
                 logger.warning(f"0 posts — HTML length: {len(html)}")
 
             session = SessionLocal()
@@ -263,7 +197,6 @@ async def _process_post(post, page, session):
                         logger.info(f"Auto-reply sent: {url}")
         except Exception as e:
             logger.error(f"Auto-reply error: {e}")
-
 """python -c "
 import asyncio, logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
