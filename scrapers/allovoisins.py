@@ -54,49 +54,74 @@ def _extract_title(text: str) -> str:
     return text[:80]
 
 
-def _is_authenticated(html: str) -> bool:
-    html_l = html.lower()
-    return "mon compte" in html_l or "déconnexion" in html_l or "se déconnecter" in html_l
+async def _login(page, context) -> bool:
+    """Завжди логінимось через форму — натискаємо Se connecter, вводимо дані."""
+    logger.info("Opening AlloVoisins homepage...")
+    await page.goto("https://www.allovoisins.com/", timeout=30000)
+    await page.wait_for_timeout(2000)
 
+    # GDPR banner
+    for sel in ["button.didomi-dismiss-button", "button#didomi-notice-agree-button"]:
+        try:
+            await page.click(sel, timeout=2000)
+            await page.wait_for_timeout(500)
+            break
+        except Exception:
+            pass
 
-async def _do_login(page, context) -> bool:
-    logger.info("Logging in via form...")
-    try:
-        await page.goto("https://www.allovoisins.com/", timeout=30000)
-        await page.wait_for_timeout(2000)
+    # Клік на "Se connecter" — пробуємо всі можливі селектори
+    logger.info("Clicking Se connecter...")
+    clicked = False
+    for sel in [
+        "button[data-mtm-category='connexion']",
+        "button.btn--ghost",
+        "button:has-text('Se connecter')",
+        "a:has-text('Se connecter')",
+        "[class*='sign-in']",
+    ]:
+        try:
+            await page.click(sel, timeout=3000)
+            clicked = True
+            logger.info(f"Clicked: {sel}")
+            break
+        except Exception:
+            continue
 
-        for sel in ["button.didomi-dismiss-button", "button#didomi-notice-agree-button"]:
-            try:
-                await page.click(sel, timeout=2000)
-                await page.wait_for_timeout(500)
-                break
-            except Exception:
-                pass
-
-        await page.click("button[data-mtm-category='connexion'], button.btn--ghost", timeout=5000)
-        await page.wait_for_timeout(1500)
-
-        await page.fill("input[type='email']", AV_EMAIL, timeout=5000)
-        await page.wait_for_timeout(300)
-        await page.fill("input[type='password']", AV_PASSWORD, timeout=5000)
-        await page.wait_for_timeout(300)
-        await page.click("button:has-text('Connexion')", timeout=5000)
-        await page.wait_for_timeout(3000)
-
-        html = await page.content()
-        if _is_authenticated(html):
-            cookies = await context.cookies()
-            with open(COOKIES_FILE, "w") as f:
-                json.dump(cookies, f)
-            logger.info("Login successful, cookies saved ✅")
-            return True
-        else:
-            logger.error("Login failed after form submit ❌")
-            return False
-
-    except Exception as e:
-        logger.error(f"Login error: {e}")
+    if not clicked:
+        logger.error("Could not find Se connecter button")
         return False
+
+    await page.wait_for_timeout(2000)
+
+    # Вводимо email
+    logger.info("Filling email...")
+    await page.fill("input[type='email']", AV_EMAIL, timeout=5000)
+    await page.wait_for_timeout(400)
+
+    # Вводимо password
+    logger.info("Filling password...")
+    await page.fill("input[type='password']", AV_PASSWORD, timeout=5000)
+    await page.wait_for_timeout(400)
+
+    # Клік Connexion
+    logger.info("Clicking Connexion...")
+    await page.click("button:has-text('Connexion')", timeout=5000)
+    await page.wait_for_timeout(3000)
+
+    # Зберігаємо cookies
+    html = await page.content()
+    html_l = html.lower()
+    authenticated = "mon compte" in html_l or "déconnexion" in html_l or "se déconnecter" in html_l
+
+    if authenticated:
+        cookies = await context.cookies()
+        with open(COOKIES_FILE, "w") as f:
+            json.dump(cookies, f)
+        logger.info("Login successful ✅ cookies saved")
+    else:
+        logger.error("Login failed ❌")
+
+    return authenticated
 
 
 async def scrape():
@@ -105,41 +130,33 @@ async def scrape():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=False)
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             locale="fr-FR",
             timezone_id="Europe/Paris",
         )
         page = await context.new_page()
 
-        if os.path.exists(COOKIES_FILE):
-            with open(COOKIES_FILE) as f:
-                cookies = json.load(f)
-            await context.add_cookies(cookies)
-
         try:
+            # Завжди логінимось перед скрапінгом
+            ok = await _login(page, context)
+            if not ok:
+                logger.error("Aborting — not authenticated")
+                return
+
+            # Переходимо на feed
+            logger.info("Navigating to feed...")
             await page.goto(FEED_URL, timeout=30000)
             await page.wait_for_timeout(3000)
 
-            html = await page.content()
-
-            if not _is_authenticated(html):
-                logger.warning("Session expired — re-logging in...")
-                ok = await _do_login(page, context)
-                if not ok:
-                    logger.error("Cannot authenticate, aborting")
-                    return
-                await page.goto(FEED_URL, timeout=30000)
-                await page.wait_for_timeout(3000)
-                html = await page.content()
-
-            logger.info("Session: authenticated ✅")
-
+            # GDPR на feed
             try:
                 await page.click("button.didomi-dismiss-button", timeout=3000)
                 await page.wait_for_timeout(1000)
             except Exception:
                 pass
 
+            # Скролимо вниз
             for _ in range(3):
                 await page.keyboard.press("End")
                 await page.wait_for_timeout(1000)
@@ -148,7 +165,8 @@ async def scrape():
             logger.info(f"Found {len(posts)} posts")
 
             if not posts:
-                logger.warning(f"Page HTML length: {len(html)}")
+                html = await page.content()
+                logger.warning(f"0 posts — HTML length: {len(html)}")
 
             session = SessionLocal()
             try:
@@ -246,7 +264,7 @@ async def _process_post(post, page, session):
         except Exception as e:
             logger.error(f"Auto-reply error: {e}")
 
-            
+
 """python -c "
 import asyncio, logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
