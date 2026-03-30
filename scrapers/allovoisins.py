@@ -105,7 +105,7 @@ async def _login(page, context) -> bool:
 
     # Клік Connexion
     logger.info("Clicking Connexion...")
-    await page.click("button:has-text('Connexion')", timeout=5000)
+    await page.click("#login-btn", timeout=5000)
     await page.wait_for_timeout(3000)
 
     # Зберігаємо cookies
@@ -263,7 +263,6 @@ async def _process_post(post, page, session):
                         logger.info(f"Auto-reply sent: {url}")
         except Exception as e:
             logger.error(f"Auto-reply error: {e}")
-
 
 """python -c "
 import asyncio, logging
