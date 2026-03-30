@@ -17,16 +17,29 @@ SOURCE_BUTTONS = {
 
 DEFAULT_BUTTON = ("🌐 Відкрити оголошення", "https://www.pap.fr")
 
+SOURCE_EMOJI = {
+    "pap": "🏠",
+    "allovoisins": "🤝",
+}
+
 
 def format_alert(lead: Lead) -> str:
-    lines = ["🔥 NEW PROJECT\n"]
+    emoji = SOURCE_EMOJI.get(lead.source, "🔥")
+    lines = [f"{emoji} NEW PROJECT\n"]
+
     if lead.city:
         lines.append(f"City: {lead.city}")
-    if lead.project:
-        lines.append(f"Project: {lead.project[:200]}")
+
+    # project — тільки для PAP (коротка назва), для AV не показуємо (=дублювання)
+    if lead.source == "pap" and lead.project:
+        lines.append(f"Type: {lead.project[:100]}")
+
     lines.append("")
+
+    # description — основний контент
     if lead.description:
-        lines.append(lead.description[:300])
+        lines.append(lead.description[:400])
+
     lines.append("")
     lines.append(f"Source: {lead.source}")
     lines.append(f"Priority: {lead.priority}")
@@ -41,7 +54,6 @@ async def send_alert(lead: Lead, roi_text: str = "") -> bool:
     if roi_text:
         text += f"\n\n{roi_text}"
 
-    # Telegram обмеження — 4096 символів
     text = text[:4096]
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"

@@ -3,7 +3,6 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
 from playwright.async_api import async_playwright
 from notifications.telegram import send_alert
 from db.database import SessionLocal
@@ -22,7 +21,7 @@ CONSTRUCTION_KEYWORDS = [
     "peinture", "plomberie", "électricité", "carrelage",
     "façade", "fenêtre", "porte", "cuisine", "salle de bain",
     "maçonnerie", "charpente", "couverture", "enduit",
-    "terrasse", "clôture", "escalier", "parquet", "placard",
+    "clôture", "escalier", "parquet", "placard",
 ]
 
 EXCLUDE_KEYWORDS = [
@@ -31,7 +30,10 @@ EXCLUDE_KEYWORDS = [
     "jardinage", "tonte", "cours particulier", "leçon",
     "informatique", "dépannage informatique",
     "vente", "don ", "cherche emploi",
+    "terrasse en lame", "terrasse composite", "terrasse bois",
+    "lame composite", "lame de bois",
 ]
+
 AUTO_REPLY = """Bonjour,
 
 Je suis très intéressé par votre projet. Notre équipe est disponible rapidement pour intervenir dans votre secteur.
@@ -40,6 +42,15 @@ Pouvez-vous me contacter pour que nous puissions discuter de vos besoins et vous
 
 Cordialement,
 Artibat"""
+
+
+def _extract_title(text: str) -> str:
+    """Extract first meaningful line as project title."""
+    for line in text.splitlines():
+        line = line.strip()
+        if len(line) > 10 and line not in ("NOUVEAU", "Bud", "Demande publique"):
+            return line[:120]
+    return text[:80]
 
 
 async def scrape():
@@ -67,24 +78,20 @@ async def scrape():
             await page.goto(FEED_URL, timeout=30000)
             await page.wait_for_timeout(3000)
 
-            # закриваємо GDPR якщо є
             try:
                 await page.click("button.didomi-dismiss-button", timeout=3000)
                 await page.wait_for_timeout(1000)
             except Exception:
                 pass
 
-            # скролимо щоб завантажити більше
             for _ in range(3):
                 await page.keyboard.press("End")
                 await page.wait_for_timeout(1000)
 
-            # знаходимо всі запити
             posts = await page.query_selector_all("article.search.mg-bottom.pointer")
             logger.info(f"Found {len(posts)} posts")
 
             if not posts:
-                # спробуємо через текст
                 html = await page.content()
                 logger.info(f"Page length: {len(html)}")
 
@@ -110,12 +117,10 @@ async def _process_post(post, page, session):
     text = await post.inner_text()
     if not text.strip():
         return
-    
-    # пропускаємо статичні блоки
+
     if "Thématiques du moment" in text or "themes-du-moment" in text:
         return
 
-    # перевіряємо чи є ключові слова
     text_lower = text.lower()
     if not any(kw in text_lower for kw in CONSTRUCTION_KEYWORDS):
         return
@@ -124,9 +129,6 @@ async def _process_post(post, page, session):
         logger.debug(f"Skipped (excluded category): {text[:80]}")
         return
 
-
-
-    # унікальний ID поста
     link = await post.query_selector("a[href*='/annonce/'], a[href*='/search/'], a[href*='/demande/']")
     if link:
         url = await link.get_attribute("href")
@@ -134,22 +136,29 @@ async def _process_post(post, page, session):
             url = f"https://www.allovoisins.com{url}"
     else:
         url = f"https://www.allovoisins.com/accueil#{hash(text[:100])}"
-        if is_duplicate(session, url):
-            logger.debug(f"Duplicate: {url}")
-            return
 
-    # витягуємо місто
-    # витягуємо місто правильно
+    if is_duplicate(session, url):
+        logger.debug(f"Duplicate: {url}")
+        return
+
     city_match = re.search(r"(Nice|Cannes|Antibes|Toulon|Fréjus|Saint-Tropez|Grasse)", text)
     city = city_match.group(1) if city_match else "Nice"
     department = "06" if any(c in city for c in ["Nice", "Cannes", "Antibes", "Grasse"]) else "83"
+
     base_priority, lead_type = advanced_score(text, "HIGH")
+
+    # Чистий текст для опису — прибираємо службові рядки AV
+    clean_lines = [
+        line.strip() for line in text.splitlines()
+        if line.strip() and line.strip() not in ("NOUVEAU", "Bud", "Demande publique")
+    ]
+    clean_description = "\n".join(clean_lines)[:500]
 
     lead = Lead(
         source="allovoisins",
         city=city,
         department=department,
-        project=text[:200],
+        project=_extract_title(text),
         type=lead_type.value,
         priority=base_priority,
         surface=None,
@@ -157,7 +166,7 @@ async def _process_post(post, page, session):
         phone=None,
         email=None,
         url=url,
-        description=text[:500],
+        description=clean_description,
     )
 
     saved = save_lead(session, lead)
@@ -165,9 +174,10 @@ async def _process_post(post, page, session):
         logger.info(f"New lead: {city} | {url}")
         await send_alert(lead)
 
-        # автовідповідь
         try:
-            reply_btn = await post.query_selector("button[class*='reply'], a[class*='reply'], [class*='repondre'], [class*='Ответить']")
+            reply_btn = await post.query_selector(
+                "button[class*='reply'], a[class*='reply'], [class*='repondre'], [class*='Ответить']"
+            )
             if reply_btn:
                 await reply_btn.click()
                 await page.wait_for_timeout(1000)
@@ -186,11 +196,16 @@ async def _process_post(post, page, session):
 
 
 
-
 """python -c "
 import asyncio, logging
-logging.basicConfig(level='DEBUG', format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
-from scrapers.allovoisins import scrape
-asyncio.run(scrape())
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
+from scrapers.allovoisins import scrape as scrape_av
+from scrapers.pap import scrape as scrape_pap
+
+async def run_all():
+    await asyncio.gather(scrape_av(), scrape_pap())
+
+asyncio.run(run_all())
 "
 """
+
