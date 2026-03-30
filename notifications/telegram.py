@@ -73,7 +73,7 @@ def format_alert(lead: Lead) -> str:
     # Для AV — шаблон відповіді в кінці
     if lead.source == "allovoisins":
         lines.append("\n─────────────────")
-        lines.append("📋 Відповідь (copy):\n")
+        lines.append("📋 Answer (copy):\n")
         lines.append(AUTO_REPLY_TEMPLATE)
 
     return "\n".join(lines)
