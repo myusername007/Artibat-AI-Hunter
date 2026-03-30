@@ -22,6 +22,15 @@ SOURCE_EMOJI = {
     "allovoisins": "🤝",
 }
 
+AUTO_REPLY_TEMPLATE = (
+    "Bonjour,\n\n"
+    "Je suis très intéressé par votre projet. Notre équipe est disponible "
+    "rapidement pour intervenir dans votre secteur.\n\n"
+    "Pouvez-vous me contacter pour que nous puissions discuter de vos besoins "
+    "et vous proposer un devis gratuit ?\n\n"
+    "Cordialement,\nArtibat"
+)
+
 
 def format_alert(lead: Lead) -> str:
     emoji = SOURCE_EMOJI.get(lead.source, "🔥")
@@ -30,13 +39,12 @@ def format_alert(lead: Lead) -> str:
     if lead.city:
         lines.append(f"City: {lead.city}")
 
-    # project — тільки для PAP (коротка назва), для AV не показуємо (=дублювання)
+    # project — тільки для PAP
     if lead.source == "pap" and lead.project:
         lines.append(f"Type: {lead.project[:100]}")
 
     lines.append("")
 
-    # description — основний контент
     if lead.description:
         lines.append(lead.description[:400])
 
@@ -56,23 +64,40 @@ async def send_alert(lead: Lead, roi_text: str = "") -> bool:
 
     text = text[:4096]
 
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    tg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
     btn_text, btn_url = SOURCE_BUTTONS.get(lead.source, DEFAULT_BUTTON)
     if lead.url and lead.url.startswith("http"):
         btn_url = lead.url
 
-    reply_markup = {
-        "inline_keyboard": [[
-            {"text": btn_text, "url": btn_url}
-        ]]
-    }
+    reply_markup = {"inline_keyboard": [[{"text": btn_text, "url": btn_url}]]}
 
     async with httpx.AsyncClient() as client:
-        response = await client.post(url, json={
+        response = await client.post(tg_url, json={
             "chat_id": int(CHAT_ID),
             "text": text,
             "reply_markup": reply_markup,
             "disable_web_page_preview": True,
         })
+
+    # Для AV — окреме повідомлення з шаблоном для швидкого copy-paste
+    if lead.source == "allovoisins" and response.status_code == 200:
+        await _send_reply_template(lead)
+
     return response.status_code == 200
+
+
+async def _send_reply_template(lead: Lead) -> None:
+    """Send reply template as a separate message — tap to copy and paste on AV."""
+    tg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+
+    header = f"📋 Шаблон відповіді — {lead.city}"
+    text = f"{header}\n\n`{AUTO_REPLY_TEMPLATE}`"
+
+    async with httpx.AsyncClient() as client:
+        await client.post(tg_url, json={
+            "chat_id": int(CHAT_ID),
+            "text": text,
+            "parse_mode": "Markdown",
+            "disable_web_page_preview": True,
+        })
