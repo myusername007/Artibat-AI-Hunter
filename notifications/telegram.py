@@ -31,6 +31,21 @@ AUTO_REPLY_TEMPLATE = (
     "Cordialement,\nArtibat"
 )
 
+# Службові рядки AV які не потрібні в description
+AV_NOISE = {"J'aime", "Recommander", "Répondre", "réponses", "réponse", "Bud", "NOUVEAU"}
+
+
+def _clean_av_description(text: str) -> str:
+    lines = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if any(noise in line for noise in AV_NOISE):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
+
 
 def format_alert(lead: Lead) -> str:
     emoji = SOURCE_EMOJI.get(lead.source, "🔥")
@@ -46,11 +61,21 @@ def format_alert(lead: Lead) -> str:
     lines.append("")
 
     if lead.description:
-        lines.append(lead.description[:400])
+        desc = lead.description[:400]
+        if lead.source == "allovoisins":
+            desc = _clean_av_description(desc)
+        lines.append(desc)
 
     lines.append("")
     lines.append(f"Source: {lead.source}")
     lines.append(f"Priority: {lead.priority}")
+
+    # Для AV — шаблон відповіді в кінці
+    if lead.source == "allovoisins":
+        lines.append("\n─────────────────")
+        lines.append("📋 Відповідь (copy):\n")
+        lines.append(AUTO_REPLY_TEMPLATE)
+
     return "\n".join(lines)
 
 
@@ -80,24 +105,4 @@ async def send_alert(lead: Lead, roi_text: str = "") -> bool:
             "disable_web_page_preview": True,
         })
 
-    # Для AV — окреме повідомлення з шаблоном для швидкого copy-paste
-    if lead.source == "allovoisins" and response.status_code == 200:
-        await _send_reply_template(lead)
-
     return response.status_code == 200
-
-
-async def _send_reply_template(lead: Lead) -> None:
-    """Send reply template as a separate message — tap to copy and paste on AV."""
-    tg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-
-    header = f"📋 Шаблон відповіді — {lead.city}"
-    text = f"{header}\n\n`{AUTO_REPLY_TEMPLATE}`"
-
-    async with httpx.AsyncClient() as client:
-        await client.post(tg_url, json={
-            "chat_id": int(CHAT_ID),
-            "text": text,
-            "parse_mode": "Markdown",
-            "disable_web_page_preview": True,
-        })
