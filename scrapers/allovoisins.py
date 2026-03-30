@@ -13,7 +13,7 @@ from core.roi_engine import advanced_score
 logger = logging.getLogger("artibat.allovoisins")
 
 COOKIES_FILE = "cookies_allovoisins.json"
-FEED_URL     = "https://www.allovoisins.com/accueil"
+FEED_URL = "https://www.allovoisins.com/accueil"
 
 CONSTRUCTION_KEYWORDS = [
     "rénovation", "travaux", "ravalement", "isolation",
@@ -56,14 +56,13 @@ async def scrape():
     logger.info("AlloVoisins scraper started")
 
     if not os.path.exists(COOKIES_FILE):
-        logger.error(f"Cookies file not found: {COOKIES_FILE}. Run: python login_allovoisins.py --manual")
+        logger.error(f"Cookies file not found: {COOKIES_FILE}")
         return
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)
+        browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-                       "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             locale="fr-FR",
             timezone_id="Europe/Paris",
         )
@@ -77,14 +76,6 @@ async def scrape():
         try:
             await page.goto(FEED_URL, timeout=30000)
             await page.wait_for_timeout(3000)
-
-            html = await page.content()
-            html_l = html.lower()
-            if "mon compte" in html_l or "déconnexion" in html_l or "se déconnecter" in html_l:
-                logger.info("Session: authenticated ✅")
-            else:
-                logger.error("Session: NOT authenticated ❌ — run: python login_allovoisins.py --manual")
-                return
 
             try:
                 await page.click("button.didomi-dismiss-button", timeout=3000)
@@ -100,7 +91,8 @@ async def scrape():
             logger.info(f"Found {len(posts)} posts")
 
             if not posts:
-                logger.warning(f"0 posts — HTML length: {len(html)}")
+                html = await page.content()
+                logger.info(f"Page length: {len(html)}")
 
             session = SessionLocal()
             try:
@@ -113,7 +105,7 @@ async def scrape():
                 session.close()
 
         except Exception as e:
-            logger.error(f"Scraper error: {e}")
+            logger.error(f"Error: {e}")
         finally:
             await browser.close()
 
@@ -133,7 +125,7 @@ async def _process_post(post, page, session):
         return
 
     if any(kw in text_lower for kw in EXCLUDE_KEYWORDS):
-        logger.debug(f"Skipped (excluded): {text[:80]}")
+        logger.debug(f"Skipped (excluded category): {text[:80]}")
         return
 
     link = await post.query_selector("a[href*='/annonce/'], a[href*='/search/'], a[href*='/demande/']")
@@ -182,7 +174,7 @@ async def _process_post(post, page, session):
 
         try:
             reply_btn = await post.query_selector(
-                "button[class*='reply'], a[class*='reply'], [class*='repondre']"
+                "button[class*='reply'], a[class*='reply'], [class*='repondre'], [class*='Ответить']"
             )
             if reply_btn:
                 await reply_btn.click()
@@ -194,9 +186,14 @@ async def _process_post(post, page, session):
                     submit = await page.query_selector("button[type='submit']")
                     if submit:
                         await submit.click()
-                        logger.info(f"Auto-reply sent: {url}")
+                        logger.info(f"Auto-reply sent for: {url}")
         except Exception as e:
             logger.error(f"Auto-reply error: {e}")
+
+
+
+
+
 """python -c "
 import asyncio, logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
