@@ -18,49 +18,53 @@ class ZoneType(str, Enum):
     PERIPHERIE  = "périphérie"
 
 
-# Вартість ремонту €/m²
+# Вартість ремонту €/m² — ОНОВЛЕНО
 TRAVAUX_COST: dict[TravauxType, tuple[int, int]] = {
-    TravauxType.LIGHT: (300, 500),
-    TravauxType.HEAVY: (600, 800),
+    TravauxType.LIGHT: (500, 700),
+    TravauxType.HEAVY: (800, 1000),
     TravauxType.FULL:  (900, 1100),
 }
 
-# Середній ринковий €/m² по місту (базові значення 2024-2025)
+# Мінімальні пороги для фільтрації
+MIN_PRIX    = 20_000   # €  — нижче ігноруємо
+MIN_SURFACE = 100      # m² — нижче ігноруємо
+
+# Середній ринковий €/m² по місту — ОНОВЛЕНО (реальніші значення 2024-2025)
 # Джерело: meilleursagents.com / notaires.fr
 MARKET_PRICE_M2: dict[str, int] = {
     # 06 — Alpes-Maritimes
-    "nice":          4200,
-    "cannes":        5800,
-    "antibes":       5200,
-    "grasse":        3100,
-    "menton":        4500,
-    "cagnes-sur-mer": 3800,
-    "cagnes":        3800,
-    "vence":         3200,
-    "mougins":       4800,
-    "vallauris":     3400,
-    "juan-les-pins": 5000,
+    "nice":             5000,
+    "cannes":           6500,
+    "antibes":          5800,
+    "grasse":           3600,
+    "menton":           5000,
+    "cagnes-sur-mer":   4300,
+    "cagnes":           4300,
+    "vence":            3800,
+    "mougins":          5500,
+    "vallauris":        4000,
+    "juan-les-pins":    5500,
     # 83 — Var
-    "toulon":        2900,
-    "fréjus":        3400,
-    "frejus":        3400,
-    "saint-tropez":  12000,
-    "draguignan":    2400,
-    "hyères":        3600,
-    "sainte-maxime": 5500,
-    "la seyne-sur-mer": 2600,
-    "la seyne":      2600,
-    "bandol":        5000,
-    "sanary":        4800,
+    "toulon":           3200,
+    "fréjus":           3800,
+    "frejus":           3800,
+    "saint-tropez":     14000,
+    "draguignan":       2700,
+    "hyères":           4000,
+    "sainte-maxime":    6000,
+    "la seyne-sur-mer": 2900,
+    "la seyne":         2900,
+    "bandol":           5500,
+    "sanary":           5200,
 }
 
-DEFAULT_MARKET_PRICE = 3500  # якщо місто не знайдено
+DEFAULT_MARKET_PRICE = 4000  # якщо місто не знайдено
 
 # Зональні коефіцієнти
 ZONE_COEFF: dict[ZoneType, float] = {
-    ZoneType.CENTRE:     1.15,  # +15% (середина між +10 і +20)
+    ZoneType.CENTRE:     1.15,
     ZoneType.STANDARD:   1.0,
-    ZoneType.PERIPHERIE: 0.90,  # -10%
+    ZoneType.PERIPHERIE: 0.90,
 }
 
 # Ключові слова для автовизначення зони
@@ -71,6 +75,13 @@ CENTRE_KEYWORDS = [
 PERIPHERIE_KEYWORDS = [
     "périphérie", "périphérique", "banlieue", "campagne", "rural",
     "zone industrielle", "zac", "lotissement",
+]
+
+# Ключові слова для ВИКЛЮЧЕННЯ (дрібні роботи — не є інвестиційним лідом)
+EXCLUDE_KEYWORDS = [
+    "peinture", "nettoyage", "jardinage", "tonte", "ménage",
+    "vitrerie", "vitres", "débarras", "déménagement", "montage meuble",
+    "petits travaux", "petit coup de peinture",
 ]
 
 # Ключові слова для автовизначення типу ремонту
@@ -113,8 +124,14 @@ class ROIResult:
     roi_max: float
     roi_mid: float
 
-    score: str  # HIGH / MEDIUM / LOW
+    score: str  # HIGH / MEDIUM / LOW / IGNORED
     summary: str
+
+
+def is_excluded(description: str) -> bool:
+    """Повертає True якщо опис містить ключові слова дрібних робіт."""
+    text = description.lower()
+    return any(kw in text for kw in EXCLUDE_KEYWORDS)
 
 
 def detect_zone(description: str) -> ZoneType:
@@ -129,19 +146,16 @@ def detect_zone(description: str) -> ZoneType:
 def detect_travaux_type(description: str, dpe: str | None) -> TravauxType:
     text = description.lower()
 
-    # DPE F/G → мінімум HEAVY
     if dpe in ("F", "G"):
         if any(kw in text for kw in FULL_KEYWORDS):
             return TravauxType.FULL
         return TravauxType.HEAVY
 
-    # DPE E → мінімум LIGHT
     if dpe == "E":
         if any(kw in text for kw in HEAVY_KEYWORDS + FULL_KEYWORDS):
             return TravauxType.HEAVY
         return TravauxType.LIGHT
 
-    # без DPE — визначаємо по тексту
     if any(kw in text for kw in FULL_KEYWORDS):
         return TravauxType.FULL
     if any(kw in text for kw in HEAVY_KEYWORDS):
@@ -149,7 +163,6 @@ def detect_travaux_type(description: str, dpe: str | None) -> TravauxType:
     if any(kw in text for kw in LIGHT_KEYWORDS):
         return TravauxType.LIGHT
 
-    # за замовчуванням — LIGHT (консервативно)
     return TravauxType.LIGHT
 
 
@@ -163,10 +176,32 @@ def calculate_roi(
     zone: ZoneType | None = None,
 ) -> ROIResult:
 
+    # ── Фільтри: ігноруємо нерелевантні об'єкти ──────────────────────────────
+    ignored_reason = None
+
+    if is_excluded(description):
+        ignored_reason = "дрібні роботи (excluded keywords)"
+    elif surface > 0 and surface < MIN_SURFACE:
+        ignored_reason = f"surface {surface}m² < {MIN_SURFACE}m²"
+    elif prix_achat > 0 and prix_achat < MIN_PRIX:
+        ignored_reason = f"prix {prix_achat}€ < {MIN_PRIX}€"
+
+    if ignored_reason:
+        return ROIResult(
+            city=city, surface=surface, prix_achat=prix_achat,
+            travaux_type=travaux_type or TravauxType.LIGHT,
+            zone=zone or ZoneType.STANDARD, dpe=dpe,
+            prix_m2_marche=0, travaux_min=0, travaux_max=0, travaux_mid=0,
+            prix_revente_min=0, prix_revente_max=0, prix_revente_mid=0,
+            roi_min=0, roi_max=0, roi_mid=0,
+            score="IGNORED",
+            summary=f"⚫ IGNORED: {ignored_reason}",
+        )
+    # ─────────────────────────────────────────────────────────────────────────
+
     city_key = city.lower().strip()
     prix_m2_marche = MARKET_PRICE_M2.get(city_key, DEFAULT_MARKET_PRICE)
 
-    # автовизначення якщо не передано
     if zone is None:
         zone = detect_zone(description)
     if travaux_type is None:
@@ -174,20 +209,16 @@ def calculate_roi(
 
     zone_coeff = ZONE_COEFF[zone]
 
-    # вартість ремонту
     cost_min, cost_max = TRAVAUX_COST[travaux_type]
     travaux_min = surface * cost_min
     travaux_max = surface * cost_max
     travaux_mid = surface * (cost_min + cost_max) / 2
 
-    # ціна продажу після ремонту
     base_revente = surface * prix_m2_marche * zone_coeff
-    # діапазон ±5% для консервативної/оптимістичної оцінки
     prix_revente_min = base_revente * 0.95
     prix_revente_max = base_revente * 1.05
     prix_revente_mid = base_revente
 
-    # ROI = (revente - achat - travaux) / (achat + travaux)
     def _roi(revente: float, travaux: float) -> float:
         total = prix_achat + travaux
         if total <= 0:
@@ -198,7 +229,6 @@ def calculate_roi(
     roi_max = _roi(prix_revente_max, travaux_min)
     roi_mid = _roi(prix_revente_mid, travaux_mid)
 
-    # scoring
     if roi_mid >= 30:
         score = "HIGH"
     elif roi_mid >= 15:
@@ -206,7 +236,6 @@ def calculate_roi(
     else:
         score = "LOW"
 
-    # підвищуємо пріоритет для F/G DPE (ринок недооцінює, ми заробляємо на реновації)
     if dpe in ("F", "G") and score == "MEDIUM":
         score = "HIGH"
 
@@ -217,24 +246,14 @@ def calculate_roi(
     )
 
     return ROIResult(
-        city=city,
-        surface=surface,
-        prix_achat=prix_achat,
-        travaux_type=travaux_type,
-        zone=zone,
-        dpe=dpe,
+        city=city, surface=surface, prix_achat=prix_achat,
+        travaux_type=travaux_type, zone=zone, dpe=dpe,
         prix_m2_marche=prix_m2_marche,
-        travaux_min=travaux_min,
-        travaux_max=travaux_max,
-        travaux_mid=travaux_mid,
-        prix_revente_min=prix_revente_min,
-        prix_revente_max=prix_revente_max,
+        travaux_min=travaux_min, travaux_max=travaux_max, travaux_mid=travaux_mid,
+        prix_revente_min=prix_revente_min, prix_revente_max=prix_revente_max,
         prix_revente_mid=prix_revente_mid,
-        roi_min=roi_min,
-        roi_max=roi_max,
-        roi_mid=roi_mid,
-        score=score,
-        summary=summary,
+        roi_min=roi_min, roi_max=roi_max, roi_mid=roi_mid,
+        score=score, summary=summary,
     )
 
 
