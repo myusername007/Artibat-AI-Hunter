@@ -61,32 +61,28 @@ async def scrape():
         return
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        # Точно як manual_login: headless=False, звичайний контекст
+        browser = await p.chromium.launch(headless=False)
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             locale="fr-FR",
             timezone_id="Europe/Paris",
         )
 
-        # ── Stealth — обов'язково до goto ────────────────────────────────────
-        page = await context.new_page()
-        await Stealth().apply_stealth_async(page)
-
         with open(COOKIES_FILE) as f:
             cookies = json.load(f)
         await context.add_cookies(cookies)
-        # ─────────────────────────────────────────────────────────────────────
+
+        page = await context.new_page()
 
         try:
             await page.goto(FEED_URL, timeout=30000)
             await page.wait_for_timeout(3000)
 
-            # Діагностика: чи залогінені?
             html = await page.content()
             if "mon compte" in html.lower() or "déconnexion" in html.lower():
                 logger.info("Session: authenticated ✅")
             else:
-                logger.warning("Session: NOT authenticated ⚠️ — cookies may be stale")
+                logger.warning("Session: NOT authenticated ⚠️")
 
             try:
                 await page.click("button.didomi-dismiss-button", timeout=3000)
@@ -102,7 +98,7 @@ async def scrape():
             logger.info(f"Found {len(posts)} posts")
 
             if not posts:
-                logger.warning(f"Page HTML length: {len(html)} — possible block or redirect")
+                logger.warning(f"Page HTML length: {len(html)}")
 
             session = SessionLocal()
             try:
@@ -154,9 +150,7 @@ async def _process_post(post, page, session):
     city = city_match.group(1) if city_match else "Nice"
     department = "06" if any(c in city for c in ["Nice", "Cannes", "Antibes", "Grasse"]) else "83"
 
-    # ── Фікс: дефолтний priority LOW, advanced_score підвищує якщо треба ──
     base_priority, lead_type = advanced_score(text, "LOW")
-    # ─────────────────────────────────────────────────────────────────────
 
     clean_lines = [
         line.strip() for line in text.splitlines()
