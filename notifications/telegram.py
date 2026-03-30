@@ -9,13 +9,13 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 SOURCE_BUTTONS = {
-    "allovoisins": ("🌐 Відкрити AlloVoisins", "https://www.allovoisins.com/accueil"),
-    "pap":         ("🏠 Відкрити PAP", "https://www.pap.fr"),
-    "bienici":     ("🏡 Відкрити Bien'ici", "https://www.bienici.com"),
-    "seloger":     ("🔍 Відкрити SeLoger", "https://www.seloger.com"),
+    "allovoisins": ("🌐 Open AlloVoisins", "https://www.allovoisins.com/accueil"),
+    "pap":         ("🏠 Open PAP", "https://www.pap.fr"),
+    "bienici":     ("🏡 Open Bien'ici", "https://www.bienici.com"),
+    "seloger":     ("🔍 Open SeLoger", "https://www.seloger.com"),
 }
 
-DEFAULT_BUTTON = ("🌐 Відкрити оголошення", "https://www.pap.fr")
+DEFAULT_BUTTON = ("🌐 Open Announcement", "https://www.pap.fr")
 
 SOURCE_EMOJI = {
     "pap": "🏠",
