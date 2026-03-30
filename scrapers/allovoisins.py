@@ -88,7 +88,7 @@ async def scrape():
                 await page.keyboard.press("End")
                 await page.wait_for_timeout(1000)
 
-            posts = await page.query_selector_all("article.search.mg-bottom.pointer")
+            posts = await page.query_selector_all("article.search")
             logger.info(f"Found {len(posts)} posts")
 
             if not posts:
@@ -191,7 +191,6 @@ async def _process_post(post, page, session):
                         logger.info(f"Auto-reply sent for: {url}")
         except Exception as e:
             logger.error(f"Auto-reply error: {e}")
-
 
 
 
