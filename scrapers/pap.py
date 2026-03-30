@@ -51,28 +51,32 @@ CITIES_83 = ["Toulon", "Fréjus", "Saint-Tropez", "Draguignan", "Hyères",
 async def scrape():
     logger.info("PAP scraper started")
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            locale="fr-FR",
-            timezone_id="Europe/Paris",
-        )
-
-        page = await context.new_page()
-        await Stealth().apply_stealth_async(page)
-        session = SessionLocal()
-
-        try:
-            for url in SEARCH_URLS:
+    session = SessionLocal()
+    try:
+        async with async_playwright() as p:
+            for i, url in enumerate(SEARCH_URLS):
+                # Fresh context per city — prevents Cloudflare session tracking
+                browser = await p.chromium.launch(headless=True)
+                context = await browser.new_context(
+                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                    locale="fr-FR",
+                    timezone_id="Europe/Paris",
+                )
+                page = await context.new_page()
+                await Stealth().apply_stealth_async(page)
                 try:
                     await _scrape_listing_page(page, url, session)
-                    await asyncio.sleep(10)  # більша пауза між містами
                 except Exception as e:
                     logger.error(f"Error scraping {url}: {e}")
-        finally:
-            session.close()
-            await browser.close()
+                finally:
+                    await browser.close()
+
+                if i < len(SEARCH_URLS) - 1:
+                    delay = 15
+                    logger.info(f"Waiting {delay}s before next city...")
+                    await asyncio.sleep(delay)
+    finally:
+        session.close()
 
     logger.info("PAP scraper finished")
 
