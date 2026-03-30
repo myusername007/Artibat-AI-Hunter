@@ -79,7 +79,7 @@ async def _scrape_listing_page(page, url: str, session):
     logger.info(f"Scraping: {url}")
 
     await page.goto(url, timeout=30000)
-    await page.wait_for_timeout(1500)
+    await page.wait_for_timeout(3000)
 
     for selector in ["button#didomi-notice-agree-button", "button[class*='agree']"]:
         try:
@@ -89,13 +89,45 @@ async def _scrape_listing_page(page, url: str, session):
         except Exception:
             pass
 
-    # чекаємо поки картки з'являться на сторінці (до 10 сек)
-    try:
-        await page.wait_for_selector("div.search-list-item-alt", timeout=10000)
-    except Exception:
-        logger.warning(f"No cards appeared within timeout: {url}")
+    # Scroll down to trigger lazy loading
+    await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
+    await page.wait_for_timeout(1000)
+    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+    await page.wait_for_timeout(1500)
 
-    cards = await page.query_selector_all("div.search-list-item-alt")
+    # Try multiple selectors — PAP structure differs by city
+    card_selectors = [
+        "div.search-list-item-alt",
+        "div[class*='search-list-item']",
+        "article[class*='item']",
+        "div.item-list > div",
+    ]
+
+    cards = []
+    for selector in card_selectors:
+        try:
+            await page.wait_for_selector(selector, timeout=5000)
+            cards = await page.query_selector_all(selector)
+            if cards:
+                logger.info(f"Selector '{selector}' matched {len(cards)} cards on {url}")
+                break
+        except Exception:
+            continue
+
+    if not cards:
+        logger.warning(f"No cards found with any selector: {url}")
+        # Save HTML for debugging
+        try:
+            html = await page.content()
+            city_slug = url.split("terrain-")[-1].split("-g")[0]
+            debug_path = f"/tmp/pap_debug_{city_slug}.html"
+            with open(debug_path, "w", encoding="utf-8") as f:
+                f.write(html)
+            logger.info(f"Saved debug HTML: {debug_path}")
+        except Exception as e:
+            logger.error(f"Failed to save debug HTML: {e}")
+        return
+
     logger.info(f"Found {len(cards)} cards on {url}")
 
     for card in cards:
@@ -162,7 +194,7 @@ async def _process_card(card, session):
         email=None,
         priority=priority,
         url=url,
-        description=_build_description(full_text, price, surface, dpe),
+        description=_build_description(price, surface, dpe),
     )
 
     saved = save_lead(session, lead)
@@ -178,7 +210,6 @@ async def _process_card(card, session):
                     dpe=dpe,
                 )
                 roi_text = roi.summary
-                # підвищуємо пріоритет якщо ROI каже HIGH
                 if roi.score == "HIGH" and lead.priority != "HIGH":
                     lead.priority = "HIGH"
                     session.commit()
@@ -207,7 +238,6 @@ def _extract_dpe_from_text(text: str) -> str | None:
 
 
 def _parse_price(text: str) -> float | None:
-    # "395.000 €" → 395000, "1 200 000 €" → 1200000
     cleaned = (text
                .replace("\u202f", "").replace("\xa0", "")
                .replace(" ", "").replace(".", "").replace(",", ""))
@@ -245,18 +275,15 @@ def _parse_city_dept(text: str) -> tuple[str, str]:
 def _determine_priority(text_lower: str, dpe: str | None, price: float | None, surface: float | None) -> str:
     score = 0
 
-    # ключові слова з чіткого списку (не загальні як "excellent")
     for kw in HIGH_PRIORITY_KEYWORDS:
         if kw in text_lower:
             score += 2
 
-    # DPE E/F/G = потреба реновації = наш профіль
     if dpe in BAD_DPE:
         score += 3
         if dpe in ["F", "G"]:
-            score += 2  # F/G → +5 total
+            score += 2
 
-    # ціна/м²
     if price and surface and surface > 0:
         ppm2 = price / surface
         if ppm2 < 3000:
@@ -264,7 +291,6 @@ def _determine_priority(text_lower: str, dpe: str | None, price: float | None, s
         elif ppm2 < 4000:
             score += 1
 
-    # immeuble/terrain/division завжди HIGH
     if any(kw in text_lower for kw in ["immeuble", "terrain", "division", "corps de ferme"]):
         score += 5
 
@@ -275,7 +301,8 @@ def _determine_priority(text_lower: str, dpe: str | None, price: float | None, s
     return "LOW"
 
 
-def _build_description(text: str, price: float | None, surface: float | None, dpe: str | None) -> str:
+def _build_description(price: float | None, surface: float | None, dpe: str | None) -> str:
+    """Structured metadata only — raw text excluded to avoid duplication in Telegram."""
     parts = []
     if price:
         parts.append(f"Prix: {int(price):,}€".replace(",", " "))
@@ -285,6 +312,4 @@ def _build_description(text: str, price: float | None, surface: float | None, dp
         parts.append(f"Prix/m²: {int(price / surface):,}€".replace(",", " "))
     if dpe:
         parts.append(f"DPE: {dpe}")
-    parts.append("")
-    parts.append(text[:400].strip())
     return "\n".join(parts)
